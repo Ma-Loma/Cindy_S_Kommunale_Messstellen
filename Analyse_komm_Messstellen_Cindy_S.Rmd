@@ -1,0 +1,26 @@
+---
+title: "Analyse von Maximalpegeln kommunaler Messtationen"
+author: "Matthias Lochmann, HLNUG"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Daten
+
+Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD.
+
+```{r}
+data_first <- read_delim(
+  "data/20240801-074.csv",
+  delim = ";",
+  escape_double = FALSE,
+  col_names = c("zeit", "pegelRoh"),
+  col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
+  trim_ws = TRUE
+)
+```
