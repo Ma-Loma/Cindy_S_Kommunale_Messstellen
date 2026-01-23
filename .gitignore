@@ -1,5 +1,6 @@
 # data files
 /data/*.csv
+/data/*.duckdb*
 
 # History files
 .Rhistory

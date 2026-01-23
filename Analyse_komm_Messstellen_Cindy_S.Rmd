@@ -7,14 +7,19 @@ output: word_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
 library(tidyverse)
+library(DBI)
+library(duckdb)
+library(dbplyr)
+
 ```
 
 ## Daten
 
 Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD.
 
-```{r}
+```{r erste_Daten}
 data_first <- read_delim(
   "data/20240801-074.csv",
   delim = ";",
@@ -24,3 +29,113 @@ data_first <- read_delim(
   trim_ws = TRUE
 )
 ```
+
+## Einlesen in DuckDB Datenbank
+
+```{r}
+con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE)
+# sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
+files <- list.files("data/", pattern = "*.csv", full.names = TRUE)# %>%   sample(40)  # zum Anfangen
+
+data_all <- data.frame()
+
+dbRemoveTable(con, "messwerte", force = TRUE)
+
+dbCreateTable(
+  con,
+  "messwerte",
+  fields = c(
+    zeit = "CHARACTER",
+    pegelRoh = "INTEGER",
+    datum = "DATE",
+    station = "INTEGER"
+  )
+)
+
+for (file in files) {
+ # message("Lade Datei: ", file)
+  #extrahiere Datum und Stationsname aus Dateinamen
+  datei_name <- tools::file_path_sans_ext(basename(file))
+  datum <- str_extract(datei_name, "\\d{8}")
+  station <- str_remove(datei_name, paste0(datum, "-"))
+  # Lese die Datei ein
+  data <- read_delim(
+    file,
+    delim = ";",
+    escape_double = FALSE,
+    col_names = c("zeit", "pegelRoh"),
+    col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
+    trim_ws = TRUE
+  ) %>%
+    # und füge Infos als Spalten an
+    mutate(datum = as.Date(datum, format = "%Y%m%d"), station = station)
+  # Schreibe die Daten in die DuckDB Tabelle
+  dbAppendTable(con, "messwerte", data)
+}
+
+# Übersicht über die Tabelle
+dbListTables(con)
+dbListFields(con, "messwerte")
+
+
+```
+
+```{r manipuliere_db}
+messwerte_db <- tbl(con, "messwerte")
+
+query <- messwerte_db %>%
+  mutate(
+    stunde = as.integer(substr(zeit, 1, 2)),
+    tageszeit = case_when(stunde >= 6  &
+                            stunde < 18 ~ "D", stunde >= 18 &
+                            stunde < 22 ~ "E", TRUE                       ~ "N")
+  ) %>%
+  select(-stunde) %>%
+  mutate(vorbeiflug =
+           case_when(pegelRoh > 127 ~ 1, TRUE            ~ 0)) %>%
+  mutate(pegel = pegelRoh - 128 * vorbeiflug) %>%
+  #Überprüfe ob es vor oder nach dem Umstelldatum 15.8.2025 ist
+  mutate(
+    vorhernachher = case_when(
+      lubridate::as_date("2025-08-15") < lubridate::as_date(datum) ~ "nachher",
+      TRUE ~ "vorher"
+    )
+  )
+
+sql_select <- dbplyr::sql_render(query)
+#cat(sql_select)
+sql_prod <- glue("
+  CREATE OR REPLACE TABLE messwerte AS
+  {sql_select}
+")
+
+DBI::dbExecute(con, sql_prod)
+dbListFields(con, "messwerte")
+
+```
+
+
+```{r analyse_pegel}
+messwerte_db<-tbl(con, "messwerte")
+max_pegel_stat <- messwerte_db %>%
+  filter(vorbeiflug==1) %>% 
+  group_by(station,pegel,vorhernachher) %>%
+  summarise(Anzahl = n()) %>%
+  ungroup() %>%
+  collect()
+
+max_pegel_stat %>%
+  ggplot(aes(x = pegel, y = Anzahl,color=factor(vorhernachher))) +
+  geom_step() +
+  facet_wrap(vars(station),scales="free_y")+
+  labs(
+    title = "Maximalpegelverteilung",
+    x = "LASmax [dB(A)]",
+    y = "Anzahl der Flugereignisse / dB",
+    color = "Vor oder nach Maßnahme"
+  ) 
+
+
+dbDisconnect(con, shutdown = TRUE)
+```
+
