@@ -17,22 +17,10 @@ library(dbplyr)
 
 ## Daten
 
-Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD.
+Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD. 
+Sie werden hier in eine Datenbank (DuckDB) eingelesen und dort bearbeitet. Das ermöglicht ein leichtes Skalieren auf größere Datenmengen, ohne durch Arbeitsspeicher eingeschränkt zu sein.
 
-```{r erste_Daten}
-data_first <- read_delim(
-  "data/20240801-074.csv",
-  delim = ";",
-  escape_double = FALSE,
-  col_names = c("zeit", "pegelRoh"),
-  col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
-  trim_ws = TRUE
-)
-```
-
-## Einlesen in DuckDB Datenbank
-
-```{r lese_in_DuckDB}}
+```{r pruefe_rohdaten_u_DuckDB}}
 
 if (exists("con")) {
   if (dbIsValid(con)) {
@@ -43,51 +31,92 @@ if (exists("con")) {
 }
   
 con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE)
+
+ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
+        {
+          messwerte_db <- tbl(con, "messwerte")
+          n_db <- messwerte_db %>% count() %>% collect() %>% pull(n)
+        },
+        n_db <- 0)
+
 # sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
-files <- list.files("data/", pattern = "*.csv", full.names = TRUE) %>%   sample(4)  # zum Anfangen
-
-data_all <- data.frame()
-if (dbListTables(con)=="messwerte") {
-  message("Tabelle messwerte existiert bereits. Lösche sie und erstelle neu.")
-  dbRemoveTable(con, "messwerte", force = TRUE)
-  
-  dbCreateTable(
-    con,
-    "messwerte",
-    fields = c(
-      zeit = "CHARACTER",
-      pegelRoh = "INTEGER",
-      datum = "DATE",
-      station = "INTEGER"
-    )
-  )
-}
+files <- list.files("data/", pattern = "*.csv", full.names = TRUE)# %>%   sample(4)  # zum Anfangen
 
 
-for (file in files) {
- # message("Lade Datei: ", file)
-  #extrahiere Datum und Stationsname aus Dateinamen
-  datei_name <- tools::file_path_sans_ext(basename(file))
-  datum <- str_extract(datei_name, "\\d{8}")
-  station <- str_remove(datei_name, paste0(datum, "-"))
-  # Lese die Datei ein
-  data <- read_delim(
-    file,
-    delim = ";",
-    escape_double = FALSE,
-    col_names = c("zeit", "pegelRoh"),
-    col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
-    trim_ws = TRUE
-  ) %>%
-    # und füge Infos als Spalten an
-    mutate(datum = as.Date(datum, format = "%Y%m%d"), station = station)
-  # Schreibe die Daten in die DuckDB Tabelle
-  dbAppendTable(con, "messwerte", data)
-}
+
+length_one_file <-
+  read_lines(sample(files, 1)) %>%
+  length()
+length_all_files <- length(files) * length_one_file
+
+message(
+  "Anzahl der Sekundenwerte aller Rohdaten:",
+  length_all_files,
+  " und Sekundenwerte in der Datenbank-Tabelle messwerte: ",
+  n_db
+)
 
 
 
 ```
+
+Nun werden ggf. die Rohdaten in die Datenbank eingelesen:
+
+```{r uebertrage_rohdaten_in_db}
+
+if (n_db == length_all_files) {
+  message(
+    "Die Daten sind bereits vollständig in der Datenbank vorhanden. Keine Aktion erforderlich."
+  )
+  knitr::opts_chunk$set(eval = FALSE)
+} else {
+  message("Die Daten werden in die Datenbank eingelesen.")
+  
+  
+  data_all <- data.frame()
+  if (dbListTables(con) == "messwerte") {
+    message("Tabelle messwerte existiert bereits. Lösche sie und erstelle neu.")
+    dbRemoveTable(con, "messwerte", force = TRUE)
+    
+    dbCreateTable(
+      con,
+      "messwerte",
+      fields = c(
+        zeit = "CHARACTER",
+        pegelRoh = "INTEGER",
+        datum = "DATE",
+        station = "INTEGER"
+      )
+    )
+  }
+  
+  
+  for (file in files) {
+    # message("Lade Datei: ", file)
+    #extrahiere Datum und Stationsname aus Dateinamen
+    datei_name <- tools::file_path_sans_ext(basename(file))
+    datum <- str_extract(datei_name, "\\d{8}")
+    station <- str_remove(datei_name, paste0(datum, "-"))
+    # Lese die Datei ein
+    data <- read_delim(
+      file,
+      delim = ";",
+      escape_double = FALSE,
+      col_names = c("zeit", "pegelRoh"),
+      col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
+      trim_ws = TRUE
+    ) %>%
+      # und füge Infos als Spalten an
+      mutate(datum = as.Date(datum, format = "%Y%m%d"),
+             station = station)
+    # Schreibe die Daten in die DuckDB Tabelle
+    dbAppendTable(con, "messwerte", data)
+  }
+}
+
+
+```
+
 
 ## Überblick über die Datenbank Tabelle
 Die Tabelle "messwerte" enthält die Rohdaten der kommunalen Messstellen mit den Spalten Zeit, Rohpegel, Datum und Stations-ID:
