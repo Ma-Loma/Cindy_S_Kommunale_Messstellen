@@ -33,24 +33,36 @@ data_first <- read_delim(
 ## Einlesen in DuckDB Datenbank
 
 ```{r}
+
+if (exists("con")) {
+  if (dbIsValid(con)) {
+    message("Verbindung zur DuckDB Datenbank wird geschlossen.")
+    dbDisconnect(con, shutdown = TRUE)
+  }
+  rm(con)
+}
+  
 con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE)
 # sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
-files <- list.files("data/", pattern = "*.csv", full.names = TRUE)# %>%   sample(40)  # zum Anfangen
+files <- list.files("data/", pattern = "*.csv", full.names = TRUE) %>%   sample(40)  # zum Anfangen
 
 data_all <- data.frame()
-
-dbRemoveTable(con, "messwerte", force = TRUE)
-
-dbCreateTable(
-  con,
-  "messwerte",
-  fields = c(
-    zeit = "CHARACTER",
-    pegelRoh = "INTEGER",
-    datum = "DATE",
-    station = "INTEGER"
+if (dbListTables(con)=="messwerte") {
+  message("Tabelle messwerte existiert bereits. Lösche sie und erstelle neu.")
+  dbRemoveTable(con, "messwerte", force = TRUE)
+  
+  dbCreateTable(
+    con,
+    "messwerte",
+    fields = c(
+      zeit = "CHARACTER",
+      pegelRoh = "INTEGER",
+      datum = "DATE",
+      station = "INTEGER"
+    )
   )
-)
+}
+
 
 for (file in files) {
  # message("Lade Datei: ", file)
@@ -73,12 +85,23 @@ for (file in files) {
   dbAppendTable(con, "messwerte", data)
 }
 
-# Übersicht über die Tabelle
-dbListTables(con)
-dbListFields(con, "messwerte")
 
 
 ```
+
+## Überblick über die Datenbank Tabelle
+Die Tabelle "messwerte" enthält die Rohdaten der kommunalen Messstellen mit den Spalten Zeit, Rohpegel, Datum und Stations-ID:
+
+```{r}
+# Übersicht über die Tabelle
+dbListTables(con)
+dbListFields(con, "messwerte")
+cat("5 zufällige Zeilen der Tabelle:\n")
+dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
+
+```
+
+## Manipulation der Daten
 
 ```{r manipuliere_db}
 messwerte_db <- tbl(con, "messwerte")
@@ -104,15 +127,19 @@ query <- messwerte_db %>%
 
 sql_select <- dbplyr::sql_render(query)
 #cat(sql_select)
-sql_prod <- glue("
+sql_prod <- glue::glue("
   CREATE OR REPLACE TABLE messwerte AS
   {sql_select}
 ")
-
 DBI::dbExecute(con, sql_prod)
-dbListFields(con, "messwerte")
-
 ```
+
+Jetzt beinhaltet die Tabelle "messwerte" einige zusätzliche Spalten zur Analyse:
+
+```{r}
+dbListFields(con, "messwerte")
+```
+
 
 
 ```{r analyse_pegel}
