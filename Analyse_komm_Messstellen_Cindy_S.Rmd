@@ -6,7 +6,7 @@ output: word_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE)
 rm(list = ls())
 library(tidyverse)
 library(DBI)
@@ -32,7 +32,7 @@ data_first <- read_delim(
 
 ## Einlesen in DuckDB Datenbank
 
-```{r}
+```{r lese_in_DuckDB}}
 
 if (exists("con")) {
   if (dbIsValid(con)) {
@@ -44,7 +44,7 @@ if (exists("con")) {
   
 con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE)
 # sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
-files <- list.files("data/", pattern = "*.csv", full.names = TRUE) %>%   sample(40)  # zum Anfangen
+files <- list.files("data/", pattern = "*.csv", full.names = TRUE) %>%   sample(4)  # zum Anfangen
 
 data_all <- data.frame()
 if (dbListTables(con)=="messwerte") {
@@ -92,7 +92,7 @@ for (file in files) {
 ## Überblick über die Datenbank Tabelle
 Die Tabelle "messwerte" enthält die Rohdaten der kommunalen Messstellen mit den Spalten Zeit, Rohpegel, Datum und Stations-ID:
 
-```{r}
+```{r tabllenuebersicht}
 # Übersicht über die Tabelle
 dbListTables(con)
 dbListFields(con, "messwerte")
@@ -136,7 +136,7 @@ DBI::dbExecute(con, sql_prod)
 
 Jetzt beinhaltet die Tabelle "messwerte" einige zusätzliche Spalten zur Analyse:
 
-```{r}
+```{r spaltennamen}
 dbListFields(con, "messwerte")
 ```
 
