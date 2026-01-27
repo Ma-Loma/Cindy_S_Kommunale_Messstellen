@@ -142,37 +142,34 @@ Zunächst wird das Datum der Lärmreduzierungsmaßnahme auf den
 massnahmendatum<-lubridate::as_date("2025-08-15")
 ```
 
-`r format(massnahmendatum, "%d.%m.%Y")` festgelegt. Die Tabelle "messwerte" wird nun um einige Spalten erweitert, die für die Analyse der Maximalpegel relevant sind.
+`r format(massnahmendatum, "%d.%m.%Y")` festgelegt. Die Tabelle "messwerte" wird nun um einige Spalten erweitert, die für die Analyse der Maximalpegel relevant sind. Zunächst die Zeitpunkte der Messungen als Zeitstempel:
 
-```{r manipuliere_db_sql}
+```{r manipuliere_db_ts}
 
-query0 <- messwerte_db %>%
-  mutate(ts = sql(
-    "CAST(datum || ' ' || zeit AS TIMESTAMP)
-       AT TIME ZONE 'Europe/Berlin'"
-  )) %>% 
-  sql_render()
-
-query0 %>% 
-  DBI::dbExecute(con, .)
+dbExecute(con, "
+  ALTER TABLE messwerte
+  DROP COLUMN ts;
+")
 
 
+dbExecute(con, "
+  ALTER TABLE messwerte
+  ADD COLUMN ts TIMESTAMPTZ;
+")
+
+dbExecute(con, "
+  UPDATE messwerte
+  SET ts =
+    CAST(datum || ' ' || zeit AS TIMESTAMP)
+      AT TIME ZONE 'Europe/Berlin'
+")
+
+  
 ```
 
 
 ```{r manipuliere_db}
 messwerte_db <- tbl(con, "messwerte")
-
-query1<-messwerte_db %>%
-  mutate(
-    zeitpunkt = sql(
-      "CAST(datum || ' ' || zeit AS TIMESTAMP) AT TIME ZONE 'Europe/Berlin'"
-    )
-  )
-
-query1 %>% 
-  sql_render() %>% 
-  DBI::dbExecute(con, .)
 
 query2 <- messwerte_db %>%
   mutate(
@@ -211,6 +208,60 @@ Hier ein kurzer Blick auf einige zufällige Zeilen der erweiterten Tabelle:
 cat("5 zufällige Zeilen der erweiterten Tabelle:\n")
 dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 ```
+
+## Setzen der Fluggeräuschfenster
+
+Starte damit, die Messwerte in Segmente zu unterteilen, die durch Lücken von mehr als einem Tag getrennt sind. Jedes Segment repräsentiert eine zusammenhängende Messperiode.
+
+```{r segmentierung}
+
+dbExecute(con, "ALTER TABLE messwerte ADD COLUMN segment BIGINT;")
+dbExecute(con, "UPDATE messwerte
+SET segment = seg.segment
+FROM (
+    SELECT
+        ts,
+        SUM(is_gap) OVER (ORDER BY ts) AS segment
+    FROM (
+        SELECT
+            ts,
+            CASE
+                WHEN ts - LAG(ts) OVER (ORDER BY ts) > INTERVAL '1 day'
+                THEN 1 ELSE 0
+            END AS is_gap
+        FROM messwerte
+    )
+) seg
+WHERE messwerte.ts = seg.ts;
+")
+
+
+
+```
+
+Danach werden die Fluggeräuschfenster in eine neue Tabelle übertragen.
+
+```{r}
+
+DBI::dbExecute(con, "
+PRAGMA threads=8;
+PRAGMA memory_limit='8GB';
+CREATE TABLE messwerte_final AS
+SELECT
+    *,
+    CASE
+        WHEN SUM(vorbeiflug) OVER (
+            PARTITION BY segment, station
+            ORDER BY ts
+            RANGE BETWEEN INTERVAL '15 seconds' PRECEDING AND INTERVAL '30 seconds' FOLLOWING
+        ) > 0 THEN 1 ELSE 0
+    END AS geraeusch
+FROM messwerte
+")
+
+
+```
+
 
 
 ## Analyse der Maximalpegel noch ohne Verbindung zu Flugdaten
