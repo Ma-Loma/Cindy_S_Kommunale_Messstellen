@@ -132,6 +132,13 @@ dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 
 ## Manipulation der Daten
 
+Zunächst wird das Datum der Lärmreduzierungsmaßnahme auf den festgelegt:
+```{r massnahmendatum}
+massnahmendatum<-lubridate::as_date("2025-08-15")
+```
+
+`r format(massnahmendatum, "%d.%m.%Y")` festgelegt. Die Tabelle "messwerte" wird nun um einige Spalten erweitert, die für die Analyse der Maximalpegel relevant sind.
+
 ```{r manipuliere_db}
 messwerte_db <- tbl(con, "messwerte")
 
@@ -140,20 +147,18 @@ query <- messwerte_db %>%
     stunde = as.integer(substr(zeit, 1, 2)),
     tageszeit = case_when(stunde >= 6  &
                             stunde < 18 ~ "D", stunde >= 18 &
-                            stunde < 22 ~ "E", TRUE                       ~ "N")
+                            stunde < 22 ~ "E", 
+                            TRUE ~ "N")
   ) %>%
   select(-stunde) %>%
   mutate(vorbeiflug =
            case_when(pegelRoh > 127 ~ 1, TRUE            ~ 0)) %>%
   mutate(pegel = pegelRoh - 128 * vorbeiflug) %>%
-  #Überprüfe ob es vor oder nach dem Umstelldatum 15.8.2025 ist
-  mutate(
-    vorhernachher = case_when(
-      lubridate::as_date("2025-08-15") < lubridate::as_date(datum) ~ "nachher",
-      TRUE ~ "vorher"
-    )
-  )
-
+  #Überprüfe ob es vor oder nach dem Umstelldatum ist
+  mutate(vorhernachher = case_when(
+    massnahmendatum < lubridate::as_date(datum) ~ "nachher",
+    TRUE ~ "vorher"
+  ))
 sql_select <- dbplyr::sql_render(query)
 #cat(sql_select)
 sql_prod <- glue::glue("
@@ -169,7 +174,16 @@ Jetzt beinhaltet die Tabelle "messwerte" einige zusätzliche Spalten zur Analyse
 dbListFields(con, "messwerte")
 ```
 
+Hier ein kurzer Blick auf einige zufällige Zeilen der erweiterten Tabelle:
+```{r tabellenuebersicht2}
+cat("5 zufällige Zeilen der erweiterten Tabelle:\n")
+dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
+```
 
+
+## Analyse der Maximalpegel noch ohne Verbindung zu Flugdaten
+
+Die Maximalpegelverteilung der vorbeifliegenden Flugzeuge an den kommunalen Messstellen wird hier analysiert. Es wird unterschieden, ob die Messung vor oder nach der Lärmreduzierungsmaßnahme am `r format(massnahmendatum, "%d.%m.%Y")` erfolgte.
 
 ```{r analyse_pegel}
 messwerte_db<-tbl(con, "messwerte")
