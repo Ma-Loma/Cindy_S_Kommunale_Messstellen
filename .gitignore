@@ -1,7 +1,9 @@
 # data files
 /data/*.csv
 /data/*.xlsx
+# Database related files
 /data/*.duckdb*
+/duckdb_extensions*
 
 # History files
 .Rhistory

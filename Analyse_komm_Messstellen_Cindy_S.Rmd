@@ -13,6 +13,7 @@ library(DBI)
 library(duckdb)
 library(dbplyr)
 
+
 ```
 
 ## Daten
@@ -30,7 +31,13 @@ if (exists("con")) {
   rm(con)
 }
   
-con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE)
+con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE,
+                 config = list(
+    extension_directory = "./duckdb_extensions"
+  ))
+
+dbExecute(con, "LOAD icu;")
+
 
 ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
         {
@@ -55,8 +62,6 @@ message(
   " und Sekundenwerte in der Datenbank-Tabelle messwerte: ",
   n_db
 )
-
-
 
 ```
 
@@ -132,17 +137,44 @@ dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 
 ## Manipulation der Daten
 
-Zunächst wird das Datum der Lärmreduzierungsmaßnahme auf den festgelegt:
+Zunächst wird das Datum der Lärmreduzierungsmaßnahme auf den 
 ```{r massnahmendatum}
 massnahmendatum<-lubridate::as_date("2025-08-15")
 ```
 
 `r format(massnahmendatum, "%d.%m.%Y")` festgelegt. Die Tabelle "messwerte" wird nun um einige Spalten erweitert, die für die Analyse der Maximalpegel relevant sind.
 
+```{r manipuliere_db_sql}
+
+query0 <- messwerte_db %>%
+  mutate(ts = sql(
+    "CAST(datum || ' ' || zeit AS TIMESTAMP)
+       AT TIME ZONE 'Europe/Berlin'"
+  )) %>% 
+  sql_render()
+
+query0 %>% 
+  DBI::dbExecute(con, .)
+
+
+```
+
+
 ```{r manipuliere_db}
 messwerte_db <- tbl(con, "messwerte")
 
-query <- messwerte_db %>%
+query1<-messwerte_db %>%
+  mutate(
+    zeitpunkt = sql(
+      "CAST(datum || ' ' || zeit AS TIMESTAMP) AT TIME ZONE 'Europe/Berlin'"
+    )
+  )
+
+query1 %>% 
+  sql_render() %>% 
+  DBI::dbExecute(con, .)
+
+query2 <- messwerte_db %>%
   mutate(
     stunde = as.integer(substr(zeit, 1, 2)),
     tageszeit = case_when(stunde >= 6  &
@@ -159,7 +191,7 @@ query <- messwerte_db %>%
     massnahmendatum < lubridate::as_date(datum) ~ "nachher",
     TRUE ~ "vorher"
   ))
-sql_select <- dbplyr::sql_render(query)
+sql_select <- dbplyr::sql_render(query2)
 #cat(sql_select)
 sql_prod <- glue::glue("
   CREATE OR REPLACE TABLE messwerte AS
