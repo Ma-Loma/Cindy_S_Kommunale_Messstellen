@@ -49,8 +49,6 @@ ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
 # sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
 files <- list.files("data/", pattern = "*.csv", full.names = TRUE)# %>%   sample(4)  # zum Anfangen
 
-
-
 length_one_file <-
   read_lines(sample(files, 1)) %>%
   length()
@@ -70,61 +68,69 @@ Nun werden ggf. die Rohdaten in die Datenbank eingelesen:
 ```{r uebertrage_rohdaten_in_db}
 
 if (n_db == length_all_files) {
+
   message(
     "Die Daten sind bereits vollständig in der Datenbank vorhanden. Keine Aktion erforderlich."
   )
-  knitr::opts_chunk$set(eval = FALSE)
+
 } else {
+
   message("Die Daten werden in die Datenbank eingelesen.")
-  
-  
-  data_all <- data.frame()
-  if (dbListTables(con) == "messwerte") {
-    message("Tabelle messwerte existiert bereits. Lösche sie und erstelle neu.")
+
+  # --- Tabelle messwerte ggf. löschen ---
+  if ("messwerte" %in% dbListTables(con)) {
+    message("Tabelle messwerte existiert bereits. Lösche sie und erstelle sie neu.")
     dbRemoveTable(con, "messwerte", force = TRUE)
-    
-    dbCreateTable(
-      con,
-      "messwerte",
-      fields = c(
-        zeit = "CHARACTER",
-        pegelRoh = "INTEGER",
-        datum = "DATE",
-        station = "INTEGER"
-      )
-    )
+  } else {
+    message("Tabelle messwerte existiert nicht. Erstelle sie neu.")
   }
-  
-  
+
+  # --- Tabelle neu anlegen ---
+  dbCreateTable(
+    con,
+    "messwerte",
+    fields = c(
+      zeit = "CHARACTER",
+      pegelRoh = "INTEGER",
+      datum = "DATE",
+      station = "INTEGER"
+    )
+  )
+
+  # --- Dateien einlesen und schreiben ---
   for (file in files) {
-    # message("Lade Datei: ", file)
-    #extrahiere Datum und Stationsname aus Dateinamen
+
     datei_name <- tools::file_path_sans_ext(basename(file))
     datum <- str_extract(datei_name, "\\d{8}")
     station <- str_remove(datei_name, paste0(datum, "-"))
-    # Lese die Datei ein
+
     data <- read_delim(
       file,
       delim = ";",
       escape_double = FALSE,
       col_names = c("zeit", "pegelRoh"),
-      col_types = list(zeit = col_time(format = "%H:%M:%S"), pegelRoh = 'i'),
+      col_types = list(
+        zeit = col_time(format = "%H:%M:%S"),
+        pegelRoh = col_integer()
+      ),
       trim_ws = TRUE
     ) %>%
-      # und füge Infos als Spalten an
-      mutate(datum = as.Date(datum, format = "%Y%m%d"),
-             station = station)
-    # Schreibe die Daten in die DuckDB Tabelle
+      mutate(
+        datum = as.Date(datum, format = "%Y%m%d"),
+        station = station
+      )
+    data<-data %>% 
+      mutate
+
     dbAppendTable(con, "messwerte", data)
   }
 }
-
-
 ```
 
 
 ## Überblick über die Datenbank Tabelle
 Die Tabelle "messwerte" enthält die Rohdaten der kommunalen Messstellen mit den Spalten Zeit, Rohpegel, Datum und Stations-ID:
+
 
 ```{r tabllenuebersicht}
 # Übersicht über die Tabelle
@@ -145,56 +151,67 @@ massnahmendatum<-lubridate::as_date("2025-08-15")
 `r format(massnahmendatum, "%d.%m.%Y")` festgelegt. Die Tabelle "messwerte" wird nun um einige Spalten erweitert, die für die Analyse der Maximalpegel relevant sind. Zunächst die Zeitpunkte der Messungen als Zeitstempel:
 
 ```{r manipuliere_db_ts}
-
 dbExecute(con, "
   ALTER TABLE messwerte
   DROP COLUMN ts;
 ")
-
 
 dbExecute(con, "
   ALTER TABLE messwerte
   ADD COLUMN ts TIMESTAMPTZ;
 ")
 
-dbExecute(con, "
+dbExecute(
+  con,
+  "
   UPDATE messwerte
   SET ts =
     CAST(datum || ' ' || zeit AS TIMESTAMP)
       AT TIME ZONE 'Europe/Berlin'
-")
+"
+)
 
-  
 ```
 
+Hier wird nun die Tageszeit hinzugefügt, also ob Tag, Abend oder Nacht ist (D,E,N).
 
 ```{r manipuliere_db}
-messwerte_db <- tbl(con, "messwerte")
+messwerte_db <- tbl(con, "messwerte") # wurde oben nur innerhalb einer if-Anweisung definiert
 
-query2 <- messwerte_db %>%
-  mutate(
-    stunde = as.integer(substr(zeit, 1, 2)),
-    tageszeit = case_when(stunde >= 6  &
-                            stunde < 18 ~ "D", stunde >= 18 &
-                            stunde < 22 ~ "E", 
-                            TRUE ~ "N")
-  ) %>%
-  select(-stunde) %>%
-  mutate(vorbeiflug =
-           case_when(pegelRoh > 127 ~ 1, TRUE            ~ 0)) %>%
-  mutate(pegel = pegelRoh - 128 * vorbeiflug) %>%
-  #Überprüfe ob es vor oder nach dem Umstelldatum ist
-  mutate(vorhernachher = case_when(
-    massnahmendatum < lubridate::as_date(datum) ~ "nachher",
-    TRUE ~ "vorher"
-  ))
-sql_select <- dbplyr::sql_render(query2)
-#cat(sql_select)
-sql_prod <- glue::glue("
+ifelse(!("tageszeit" %in% db_query_fields(con, "messwerte")), {
+  query2 <- messwerte_db %>%
+    mutate(
+      stunde = as.integer(substr(zeit, 1, 2)),
+      tageszeit = case_when(
+        stunde >= 6  &
+          stunde < 18 ~ "D",
+        stunde >= 18 &
+          stunde < 22 ~ "E",
+        TRUE ~ "N"
+      )
+    ) %>%
+    select(-stunde) %>%
+    mutate(vorbeiflug =
+             case_when(pegelRoh > 127 ~ 1, TRUE            ~ 0)) %>%
+    mutate(pegel = pegelRoh - 128 * vorbeiflug) %>%
+    #Überprüfe ob es vor oder nach dem Umstelldatum ist
+    mutate(vorhernachher = case_when(
+      massnahmendatum < lubridate::as_date(datum) ~ "nachher",
+      TRUE ~ "vorher"
+    ))
+  sql_select <- dbplyr::sql_render(query2)
+  #cat(sql_select)
+  sql_prod <- glue::glue("
   CREATE OR REPLACE TABLE messwerte AS
   {sql_select}
 ")
-DBI::dbExecute(con, sql_prod)
+  DBI::dbExecute(con, sql_prod)
+}, {
+  message(
+    "Spalte tageszeit existiert bereits in der Tabelle messwerte. Keine Aktion erforderlich."
+  )
+})
+
 ```
 
 Jetzt beinhaltet die Tabelle "messwerte" einige zusätzliche Spalten zur Analyse:
@@ -208,6 +225,64 @@ Hier ein kurzer Blick auf einige zufällige Zeilen der erweiterten Tabelle:
 cat("5 zufällige Zeilen der erweiterten Tabelle:\n")
 dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 ```
+
+## Datenbank in Parquet übertragen
+
+```{r}
+parquet_dir <- "data/parquet"
+
+if (!dir.exists(parquet_dir)) {
+
+  message("Parquet-Daten existieren noch nicht – schreibe sie neu.")
+
+  dbExecute(
+    con,
+    "
+    COPY messwerte
+    TO 'data/parquet'
+    (FORMAT PARQUET, PARTITION_BY (station))
+    "
+  )
+
+} else {
+
+  message("Parquet-Daten existieren bereits – kein COPY notwendig.")
+
+}
+
+```
+
+
+## Erstellen einer View für die Parquet-Dateien
+
+```{r}
+dbExecute(
+  con,
+  "
+  CREATE OR REPLACE VIEW messwerte_parquet AS
+  SELECT * FROM 'data/parquet/**/*.parquet'
+  "
+)
+
+messwerte_tbl <- tbl(con, "messwerte_parquet")
+colnames(messwerte_tbl)
+messwerte_tbl %>%
+#  filter(station == 117) %>%
+  filter(vorbeiflug==1) %>% 
+  group_by(datum,station) %>%
+  summarise(
+    Anzahl = n()
+  ) %>%
+  ggplot(aes(x=datum, y=Anzahl,color=factor(station)))+
+  geom_line()+
+  labs(
+    title = "Anzahl der Schallereignisse pro Tag",
+    x = "Datum",
+    y = "Anzahl der Schallereignisse",
+    color = "Messstation"
+  )
+```
+
 
 ## Setzen der Fluggeräuschfenster
 
@@ -235,9 +310,19 @@ FROM (
 WHERE messwerte.ts = seg.ts;
 ")
 
+# Erstelle Index auf station, segment und ts für schnellere Abfragen
+DBI::dbExecute(
+  con,
+  "
+  CREATE INDEX IF NOT EXISTS idx_messwerte_station_segment_ts
+  ON messwerte(station, segment, ts);
+  "
+)
 
 
 ```
+
+
 
 Danach werden die Fluggeräuschfenster in eine neue Tabelle übertragen.
 
@@ -260,8 +345,21 @@ FROM messwerte
 ")
 
 
+DBI::dbExecute(
+  con,
+  "
+  CREATE INDEX IF NOT EXISTS idx_messwerte_final_station_segment_ts
+  ON messwerte_final(station, segment, ts);
+  "
+)
+
 ```
 
+```{r}
+
+dbGetQuery(con, "SELECT * FROM messwerte_final ORDER BY RANDOM() LIMIT 5;")
+
+```
 
 
 ## Analyse der Maximalpegel noch ohne Verbindung zu Flugdaten
@@ -269,8 +367,8 @@ FROM messwerte
 Die Maximalpegelverteilung der vorbeifliegenden Flugzeuge an den kommunalen Messstellen wird hier analysiert. Es wird unterschieden, ob die Messung vor oder nach der Lärmreduzierungsmaßnahme am `r format(massnahmendatum, "%d.%m.%Y")` erfolgte.
 
 ```{r analyse_pegel}
-messwerte_db<-tbl(con, "messwerte")
-max_pegel_stat <- messwerte_db %>%
+messwerte_final_db <- tbl(con, "messwerte_final")
+max_pegel_stat <- messwerte_final_db %>%
   filter(vorbeiflug==1) %>% 
   group_by(station,pegel,vorhernachher) %>%
   summarise(Anzahl = n()) %>%
@@ -288,7 +386,18 @@ max_pegel_stat %>%
     color = "Vor oder nach Maßnahme"
   ) 
 
+```
 
+```{r}
+messwerte_final_db %>% 
+  filter(datum=="2024-09-17") %>% 
+  filter(str_sub(zeit,1,2)=="15") %>% 
+  ggplot(aes(x=ts, y=pegel, color=factor(station)))+
+  geom_point(size=0.05)
+```
+
+
+```{r disconnect}
 dbDisconnect(con, shutdown = TRUE)
 ```
 

@@ -1,8 +1,9 @@
 # data files
 /data/*.csv
 /data/*.xlsx
+*.parquet
 # Database related files
-/data/*.duckdb*
+*.duckdb*
 /duckdb_extensions*
 
 # History files
