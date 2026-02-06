@@ -1,5 +1,5 @@
 # data files
-/data/*.csv
+*.csv
 *.xlsx
 *.parquet
 # Database related files
@@ -13,6 +13,7 @@
 # Session Data files
 .RData
 .RDataTmp
+*.html
 
 # User-specific files
 .Ruserdata
