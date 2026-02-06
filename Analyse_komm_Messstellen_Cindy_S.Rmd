@@ -388,11 +388,15 @@ ANPASSUNG: Diese Werte kannst du jederzeit ändern und den Code neu ausführen
 
 ```{r zeitfenster_parameter}
 # === HIER KANNST DU DIE ZEITFENSTER ANPASSEN ===
-<<<<<<< Updated upstream
+
+
 n_sekunden_vorher <- 10   # Zeitfenster VOR dem Peak (z.B. 10 Sekunden)
-=======
+
 n_sekunden_vorher <- 30   # Zeitfenster VOR dem Peak (z.B. 10 Sekunden)
->>>>>>> Stashed changes
+
+
+n_sekunden_vorher <- 30   # Zeitfenster VOR dem Peak (z.B. 10 Sekunden)
+
 m_sekunden_nachher <- 10  # Zeitfenster NACH dem Peak (z.B. 10 Sekunden)
 
 cat("\n=== Zeitfenster-Parameter ===\n")
@@ -531,7 +535,8 @@ colnames(flugdaten_tbl)
 colnames(zeitfenster_tbl)
 colnames(verschneidung_tbl)
 
-<<<<<<< Updated upstream
+
+
 verschneidung_tbl <- tbl(con, "vorbeiflug_flug_zuordnung")
 
 
@@ -542,7 +547,7 @@ bla<-verschneidung_tbl %>%
   #select(station,peak_zeitpunkt,peak_pegel,flugzeugtyp,im_zeitfenster) %>% 
   collect()
 
-=======
+
 bla <- verschneidung_tbl %>%
   filter(datum=="2025-09-15") %>%
   #filter(im_zeitfenster == "JA") %>%
@@ -587,6 +592,51 @@ messwerte_tbl %>%
   ))
 
 
+bla <- verschneidung_tbl %>%
+  filter(datum=="2025-09-15") %>%
+  #filter(im_zeitfenster == "JA") %>%
+  #select(station,peak_zeitpunkt,peak_pegel,flugzeugtyp,im_zeitfenster) %>%
+  collect()
+
+messwerte_tbl %>%
+  filter(datum == "2025-09-15") %>%
+  #  filter(vorbeiflug == 1) %>%
+  ggplot(aes(x = ts, y = pegel)) +
+  geom_line() +
+ geom_point(
+    data = messwerte_tbl %>%
+      filter(datum == "2025-09-15") %>%
+      filter(vorbeiflug == 1),
+    aes(x = ts, y = pegel),shape=1
+  ) +
+  geom_rect(
+    data = zeitfenster_tbl %>%
+      #     filter(station == 74) %>%
+      filter(datum == "2025-09-15"),
+    aes(
+      xmin = fenster_start,
+      xmax = fenster_ende,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    color = "red",
+    fill = NA,
+    inherit.aes = FALSE
+  ) +
+  geom_vline(
+    data = flugdaten_tbl,
+    aes(xintercept = schnittpunkt_utc),
+    color = "blue",
+    inherit.aes = FALSE
+  ) +
+  facet_grid(rows = vars(station)) +
+  coord_cartesian(xlim = c(
+    as_datetime("2025-09-15 19:05:00"),
+    as_datetime("2025-09-15 19:35:00")
+  ))
+
+
+
 verschneidung_tbl %>%
   ggplot() +
   geom_segment(
@@ -600,7 +650,10 @@ verschneidung_tbl %>%
             anzahl_zuordnung = sum(im_zeitfenster=="JA"),
             mittel_peak=mean(peak_pegel,na.rm=TRUE),
             mittel_zeitdiff=mean(zeitdiff_sekunden,na.rm=TRUE))
->>>>>>> Stashed changes
+
+
+
+
 ```
 
 
