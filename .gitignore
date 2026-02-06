@@ -1,6 +1,6 @@
 # data files
 /data/*.csv
-/data/*.xlsx
+*.xlsx
 *.parquet
 # Database related files
 *.duckdb*
