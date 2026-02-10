@@ -126,23 +126,30 @@ dbGetQuery(con, "SELECT * FROM messwerte_parquet ORDER BY RANDOM() LIMIT 5;")
 ```{r dbplyrZeitfenster}
 vorbeiflug_zeitfenster_tbl <-
   tbl(con, "messwerte_parquet") |>
-  filter(vorbeiflug == 1) |>
-  arrange(station, ts) |>
+  dbplyr::window_order(ts) |>
+  group_by(station) |>
+  #  filter(vorbeiflug == 1) |>
   mutate(
-    peak_zeitpunkt = ts,
-    peak_pegel = pegel,
+    peak_zeitpunkt = case_when(vorbeiflug == 1 ~ ts, TRUE ~ NA),
+    zeitfenster_id = case_when(vorbeiflug == 1 ~ row_number(), TRUE ~ NA)
+  ) |>
+  dbplyr::window_frame(from = -sekunden_vorher, to = sekunden_nachher) |>
+  mutate(fenster = sum(vorbeiflug),
+         zeitfenster_id=max(zeitfenster_id, na.rm = TRUE)#die ID soll in jeder Zeile des Fensters stehen
+         )
 
-    fenster_start =
-      ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
-    fenster_ende  =
-      ts + sql(glue::glue("INTERVAL '{sekunden_nachher} seconds'")),
+vorbeiflug_zeitfenster_tbl %>% 
+  filter(station==74) %>% 
+  filter(tageszeit=="E") %>% 
+  filter(fenster>0) %>% 
+  collect()
 
-    sekunden_vorher  = sekunden_vorher,
-    sekunden_nachher = sekunden_nachher,
-
-    zeitfenster_id = row_number()
-  ) 
-
+vorbeiflug_zeitfenster_tbl|>
+  filter(fenster>0)|>
+  mutate(fenster_start =ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
+    fenster_ende  =ts + sql(glue::glue("INTERVAL '{sekunden_nachher} seconds'")),
+    LASmax = pegel,
+    .keep="unused")
 
 vorbeiflug_zeitfenster_tbl |>
   compute(
@@ -151,66 +158,26 @@ vorbeiflug_zeitfenster_tbl |>
     overwrite = TRUE
   )
 
-vorbeiflug_zeitfenster_tbl %>% 
-  count()
+```
+
+```{r zeitfensterSpalte}
+
+
+
+bla_tbl <-
+  tbl(con, "messwerte_parquet") |>
+  dbplyr::window_order(ts)|>
+  group_by(station)|>
+  dbplyr::window_frame(from = -sekunden_vorher, to = sekunden_nachher)|>
+  mutate(fenster=sum(vorbeiflug))
+
 
 ```
 
 
-```{r zeitfenster_erstellen}
+Insgesamt wurden `r count(vorbeiflug_zeitfenster_tbl)` Zeitfenster zu wahrscheinlichen Maxpegeln gefunden.
 
-# Erstelle oder ersetze die Tabelle "vorbeiflug_zeitfenster"
-dbExecute(con, "DROP TABLE IF EXISTS vorbeiflug_zeitfenster;")
-
-# SQL-Abfrage, die für jeden Vorbeiflug ein Zeitfenster erstellt
-query_zeitfenster <- glue::glue("
-  CREATE TABLE vorbeiflug_zeitfenster AS
-  SELECT
-    station,
-    datum,
-    zeit,
-    ts AS peak_zeitpunkt,                           -- Zeitpunkt des Maximalpegels
-    pegel AS peak_pegel,                            -- Höhe des Maximalpegels
-    -- Berechne Start und Ende des Zeitfensters:
-    ts - INTERVAL '{sekunden_vorher} seconds' AS fenster_start,
-    ts + INTERVAL '{sekunden_nachher} seconds' AS fenster_ende,
-    -- Speichere die Fenstergrößen für spätere Referenz:
-    {sekunden_vorher} AS sekunden_vorher,
-    {sekunden_nachher} AS sekunden_nachher,
-    -- Erstelle eine eindeutige ID für jedes Zeitfenster:
-    ROW_NUMBER() OVER (ORDER BY station, ts) AS zeitfenster_id
-  FROM messwerte_parquet
-  WHERE vorbeiflug = 1                              -- Nur Vorbeiflüge berücksichtigen
-  ORDER BY station, ts
-")
-
-# Führe die SQL-Abfrage aus
-dbExecute(con, query_zeitfenster)
-
-# Zeige Statistik der erstellten Zeitfenster
-anzahl_zeitfenster <- dbGetQuery(con, "SELECT COUNT(*) as n FROM vorbeiflug_zeitfenster")$n
-cat("\n=== Zeitfenster erstellt ===\n")
-cat("Anzahl wahrscheinlicher Ereignisse:", anzahl_zeitfenster, "\n")
-
-# Zeige 5 Beispiel-Zeitfenster
-cat("\n5 Beispiel-Zeitfenster:\n")
-print(
-  dbGetQuery(con, "
-    SELECT 
-      zeitfenster_id, 
-      station, 
-      peak_zeitpunkt, 
-      fenster_start, 
-      fenster_ende, 
-      peak_pegel 
-    FROM vorbeiflug_zeitfenster 
-    LIMIT 5
-  ")
-)
-```
-
-
-## Schritt 5: Verschneidung - Welche Flüge passen zu welchen Zeitfenstern?
+## Verschneidung - Welche Flüge passen zu welchen Zeitfenstern?
 
 Jetzt verknüpfen wir die Zeitfenster mit den Flugdaten.
 Ein Flug "passt" zu einem Zeitfenster, wenn sein Schnittpunkt-Zeitstempel innerhalb des Zeitfensters liegt.
@@ -222,6 +189,9 @@ flugdaten_tbl   <- tbl(con, "flugdaten")
 
 colnames(zeitfenster_tbl)
 colnames(flugdaten_tbl)
+colnames(vorbeiflug_zeitfenster_tbl)
+
+
 vorbeiflug_flug_zuordnung_tbl <-
   zeitfenster_tbl |>
   cross_join(
@@ -234,11 +204,43 @@ vorbeiflug_flug_zuordnung_tbl <-
   mutate(
     # Zeitdifferenz in Sekunden
     zeitdiff_sekunden = sql("EPOCH(zeitpunkt_des_schnittpunktes_utc - peak_zeitpunkt)"),
-
-    # Im Zeitfenster (immer JA, da gefiltert)
     im_zeitfenster = 'JA'
   ) 
 
+bla <- left_join(
+  flugdaten_tbl,
+  vorbeiflug_zeitfenster_tbl,
+  by = join_by(zeitpunkt_des_schnittpunktes_utc == ts )
+) %>% 
+  collect()
+
+```
+
+
+
+```{r vervollständigen}
+# 2. Flüge ohne Treffer
+vorbeiflug_flug_zuordnung_tbl <- 
+  vorbeiflug_flug_zuordnung_tbl %>%
+  anti_join(
+    flugdaten_tbl, by = "dfs_flight_id"  # <- oder passendes Join-Feld
+  ) %>%
+  mutate(
+    zeitdiff_sekunden = NA_real_,
+    fenster_start = NA,
+    fenster_ende = NA,
+    im_zeitfenster = 'NEIN'
+  ) %>% 
+  anti_join(
+    zeitfenster_tbl, by = "zeitfenster_id"  # <- oder passendes Join-Feld
+  ) %>%
+  mutate(
+    peak_zeitpunkt = NA,
+    flug_id = NA,
+    zeitpunkt_des_schnittpunktes_utc = NA,
+    zeitdiff_sekunden = NA_real_,
+    im_zeitfenster = 'NEIN'
+  )
 
 vorbeiflug_flug_zuordnung_tbl |>
   compute(
@@ -248,6 +250,8 @@ vorbeiflug_flug_zuordnung_tbl |>
   )
 
 ```
+
+
 
 ```{r}
 messwerte_tbl <- tbl(con, "messwerte_parquet")
@@ -295,7 +299,7 @@ messwerte_tbl %>%
   ) +
   facet_grid(rows = vars(station)) +
   coord_cartesian(xlim = c(
-    as_datetime("2025-09-15 19:05:00"),
+    as_datetime("2025-09-15 15:05:00"),
     as_datetime("2025-09-15 19:35:00")
   ))
 
@@ -589,9 +593,7 @@ if (nrow(zeitreihe_data) > 0) {
 ```
 
 
-## Schritt 9: Export der Zuordnungs-Ergebnisse
-# -----------------------------------------------------------------------------
-# Speichere die finalen Zuordnungen als CSV-Datei zum weiteren Arbeiten.
+## Export der Zuordnungs-Ergebnisse
 
 ```{r export_zuordnung}
 
@@ -620,39 +622,3 @@ cat(" ", export_datei, "\n")
 cat("   Anzahl Zuordnungen:", nrow(zuordnung_export), "\n\n")
 ```
 
-
-## ANLEITUNG ZUR PARAMETER-ANPASSUNG
-
-
- So passt du die Zeitfenster an:
-
- 1. Schaue dir die Grafiken an:
-    - Histogramm der Zeitdifferenzen: Sind viele Flüge außerhalb des
-      Fensters (weit links oder rechts vom roten Strich)?
-    - Zuordnungsrate: Ist sie zu niedrig (<50%)?
-
- 2. Schaue dir die Tabelle an:
-    - "mittlere_zeitdiff_sek": Ist sie stark negativ? → sekunden_vorher erhöhen
-    - "mittlere_zeitdiff_sek": Ist sie stark positiv? → sekunden_nachher erhöhen
-    - "min/max_zeitdiff_sek": Zeigen sie, dass das Fenster zu klein ist?
-
- 3. Passe die Werte an:
-    - Gehe zurück zu Chunk "zeitfenster_parameter" (Zeile ~119)
-    - Ändere die Werte:
-      sekunden_vorher <- 15  # z.B. von 10 auf 15
-      sekunden_nachher <- 15  # z.B. von 10 auf 15
-
- 4. Führe ab "zeitfenster_parameter" alle folgenden Chunks neu aus:
-    - zeitfenster_erstellen
-    - verschneidung
-    - visualisierung_zeitfenster
-    - tabelle_anpassung
-    - zeitreihen_detail
-    - export_zuordnung
-
- 5. Vergleiche die Ergebnisse:
-    - Hat sich die Zuordnungsrate verbessert?
-    - Ist die mittlere Zeitdifferenz näher an 0?
-
- TIPP: Beginne mit größeren Werten (z.B. n=30, m=30) und verkleinere sie
-       schrittweise, bis die Zuordnungsrate stabil hoch ist (>80%).
