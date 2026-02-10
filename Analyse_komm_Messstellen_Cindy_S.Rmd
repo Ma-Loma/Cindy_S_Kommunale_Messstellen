@@ -38,7 +38,6 @@ con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_
 
 dbExecute(con, "LOAD icu;")
 
-
 ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
         {
           messwerte_db <- tbl(con, "messwerte")
@@ -259,12 +258,12 @@ if (!dir.exists(parquet_dir)) {
 dbExecute(
   con,
   "
-  CREATE OR REPLACE VIEW messwerte_parquet AS
+  CREATE OR REPLACE VIEW pegelschrieb AS
   SELECT * FROM 'data/parquet/**/*.parquet'
   "
 )
 
-messwerte_tbl <- tbl(con, "messwerte_parquet")
+messwerte_tbl <- tbl(con, "pegelschrieb")
 
 colnames(messwerte_tbl)
 messwerte_tbl %>%

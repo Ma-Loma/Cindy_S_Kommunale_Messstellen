@@ -114,9 +114,9 @@ dem Pegelmaximum festgelegt, welches mit "vorbeiflug = 1" als wahrscheinliches E
 
 ```{r}
 dbListTables(con)
-dbListFields(con, "messwerte_parquet")
+dbListFields(con, "pegelschrieb")
 cat("5 zufällige Zeilen der Tabelle:\n")
-dbGetQuery(con, "SELECT * FROM messwerte_parquet ORDER BY RANDOM() LIMIT 5;")
+dbGetQuery(con, "SELECT * FROM pegelschrieb ORDER BY RANDOM() LIMIT 5;")
 
 ```
 
@@ -124,32 +124,37 @@ dbGetQuery(con, "SELECT * FROM messwerte_parquet ORDER BY RANDOM() LIMIT 5;")
 
 
 ```{r dbplyrZeitfenster}
-vorbeiflug_zeitfenster_tbl <-
-  tbl(con, "messwerte_parquet") |>
+messwerte_tbl <-
+  tbl(con, "pegelschrieb") |>
   dbplyr::window_order(ts) |>
   group_by(station) |>
   #  filter(vorbeiflug == 1) |>
   mutate(
-    peak_zeitpunkt = case_when(vorbeiflug == 1 ~ ts, TRUE ~ NA),
+    peak_zeit = case_when(vorbeiflug == 1 ~ ts, TRUE ~ NA),
     zeitfenster_id = case_when(vorbeiflug == 1 ~ row_number(), TRUE ~ NA)
   ) |>
   dbplyr::window_frame(from = -sekunden_vorher, to = sekunden_nachher) |>
-  mutate(fenster = sum(vorbeiflug),
+  mutate(vorbeiflugfenster = sum(vorbeiflug),
          zeitfenster_id=max(zeitfenster_id, na.rm = TRUE)#die ID soll in jeder Zeile des Fensters stehen
-         )
+         )|>
+  dbplyr::window_frame(from = -3600, to = 0) |>
+  mutate(perz10 = quantile(pegel,probs=0.1),
+         perz90 = quantile(pegel,probs=0.9))
 
-vorbeiflug_zeitfenster_tbl %>% 
-  filter(station==74) %>% 
-  filter(tageszeit=="E") %>% 
-  filter(fenster>0) %>% 
-  collect()
 
-vorbeiflug_zeitfenster_tbl|>
-  filter(fenster>0)|>
-  mutate(fenster_start =ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
-    fenster_ende  =ts + sql(glue::glue("INTERVAL '{sekunden_nachher} seconds'")),
-    LASmax = pegel,
-    .keep="unused")
+vorbeiflug_zeitfenster_tbl <- messwerte_tbl |>
+  filter(vorbeiflugfenster > 0) |>
+  mutate(
+    fenster_start = ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
+    fenster_ende  = ts + sql(glue::glue("INTERVAL '{sekunden_nachher} seconds'"))
+  )
+
+# vorbeiflug_zeitfenster_tbl %>% 
+#   filter(station==74) %>% 
+#   filter(tageszeit=="E") %>% 
+#   filter(vorbeiflugfenster>0) %>% 
+#   collect()
+# 
 
 vorbeiflug_zeitfenster_tbl |>
   compute(
@@ -158,24 +163,24 @@ vorbeiflug_zeitfenster_tbl |>
     overwrite = TRUE
   )
 
-```
-
-```{r zeitfensterSpalte}
-
-
-
-bla_tbl <-
-  tbl(con, "messwerte_parquet") |>
-  dbplyr::window_order(ts)|>
-  group_by(station)|>
-  dbplyr::window_frame(from = -sekunden_vorher, to = sekunden_nachher)|>
-  mutate(fenster=sum(vorbeiflug))
-
 
 ```
 
 
-Insgesamt wurden `r count(vorbeiflug_zeitfenster_tbl)` Zeitfenster zu wahrscheinlichen Maxpegeln gefunden.
+
+Insgesamt wurden 
+
+```{r anzahlAkustEreigniss}
+vorbeiflug_zeitfenster_tbl %>% 
+  group_by(station,zeitfenster_id) %>% 
+  summarize %>% 
+  ungroup() %>% 
+  group_by(station) %>% 
+  summarize(Anzahl_akustischeEreignisse=n())
+
+```
+
+Zeitfenster zu akustischen Ereignissen, die wahrscheinlichen Flugereignissen sind gefunden.
 
 ## Verschneidung - Welche Flüge passen zu welchen Zeitfenstern?
 
@@ -254,7 +259,7 @@ vorbeiflug_flug_zuordnung_tbl |>
 
 
 ```{r}
-messwerte_tbl <- tbl(con, "messwerte_parquet")
+messwerte_tbl <- tbl(con, "pegelschrieb")
 flugdaten_tbl <- tbl(con, "flugdaten")
 zeitfenster_tbl <- tbl(con, "vorbeiflug_zeitfenster")
 verschneidung_tbl <- tbl(con, "vorbeiflug_flug_zuordnung")
@@ -534,7 +539,7 @@ zeitreihe_data <- dbGetQuery(con, glue::glue("
     z.peak_zeitpunkt,
     f.callsign,
     f.flugzeugtyp
-  FROM messwerte_parquet m
+  FROM pegelschrieb m
   LEFT JOIN vorbeiflug_zeitfenster z
     ON m.station = z.station AND m.ts = z.peak_zeitpunkt
   LEFT JOIN vorbeiflug_flug_zuordnung f
