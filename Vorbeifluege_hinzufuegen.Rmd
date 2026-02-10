@@ -169,14 +169,28 @@ akust_fenster_u_vorbeiflug_tbl<-pegelschrieb_m_fenster_flug_tbl|>
   mutate(ereignis_id=paste0(dfs_flight_id,akust_ereignis_id))
 
 
+akust_fenster_u_vorbeiflug_tbl |>
+  compute(
+    name = "akust_fenster_u_vorbeiflug",
+    temporary = FALSE,
+    overwrite = TRUE
+  )
+
+akust_fenster_u_vorbeiflug_tbl<-tbl(con,"akust_fenster_u_vorbeiflug")
+
 ```
 
 Graphisch sieht das so aus:
 
 ```{r akust_fenster_u_vorbeiflug_graph}
-
 akust_fenster_u_vorbeiflug_tbl %>% 
   colnames()
+akust_fenster_u_vorbeiflug_tbl %>% 
+  filter(!is.na(dfs_flight_id)&!is.na(akust_ereignis_id)) %>% 
+  filter(datum == "2025-09-15") %>%
+  head(n=20) %>% 
+  collect()
+
 akust_fenster_u_vorbeiflug_tbl %>%
   filter(datum == "2025-09-15") %>%
   ggplot(aes(x = zeitpunkt_des_schnittpunktes_utc,
@@ -185,7 +199,7 @@ akust_fenster_u_vorbeiflug_tbl %>%
   geom_point()+
   facet_grid(vars(station)) +
   coord_cartesian(xlim = c(
-    as_datetime("2025-09-15 15:05:00"),
+    as_datetime("2025-09-15 19:05:00"),
     as_datetime("2025-09-15 19:35:00")
   ))
 ```
