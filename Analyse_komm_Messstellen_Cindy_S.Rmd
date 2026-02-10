@@ -134,7 +134,6 @@ Die Tabelle "messwerte" enthält die Rohdaten der kommunalen Messstellen mit den
 ```{r tabllenuebersicht}
 # Übersicht über die Tabelle
 dbListTables(con)
-dbListFields(con, "messwerte")
 cat("5 zufällige Zeilen der Tabelle:\n")
 dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 
@@ -225,48 +224,22 @@ cat("5 zufällige Zeilen der erweiterten Tabelle:\n")
 dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 ```
 
-## Datenbank in Parquet übertragen
-
-```{r dbToParquet}
-parquet_dir <- "data/parquet"
-
-if (!dir.exists(parquet_dir)) {
-
-  message("Parquet-Daten existieren noch nicht – schreibe sie neu.")
-
-  dbExecute(
-    con,
-    "
-    COPY messwerte
-    TO 'data/parquet'
-    (FORMAT PARQUET, PARTITION_BY (station))
-    "
-  )
-
-} else {
-
-  message("Parquet-Daten existieren bereits – kein COPY notwendig.")
-
-}
-
-```
 
 
-## Erstellen einer View für die Parquet-Dateien
 
-```{r parquetView}
+```{r pegelschriebView}
 dbExecute(
   con,
   "
   CREATE OR REPLACE VIEW pegelschrieb AS
-  SELECT * FROM 'data/parquet/**/*.parquet'
+  SELECT * FROM 'messwerte'
   "
 )
 
-messwerte_tbl <- tbl(con, "pegelschrieb")
+pegelschrieb_tbl <- tbl(con, "pegelschrieb")
 
-colnames(messwerte_tbl)
-messwerte_tbl %>%
+colnames(pegelschrieb_tbl)
+pegelschrieb_tbl %>%
 #  filter(station == 117) %>%
   filter(vorbeiflug==1) %>% 
   group_by(datum,station) %>%
@@ -283,7 +256,7 @@ messwerte_tbl %>%
   )
 ```
 
-```{r}
+```{r disconnect}
 
 dbDisconnect(con, shutdown = TRUE)
 ```

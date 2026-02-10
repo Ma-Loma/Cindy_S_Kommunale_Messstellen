@@ -42,7 +42,7 @@ if (!file.exists(flugdaten_pfad)) {
   stop(paste("FEHLER: Flugdaten-Datei nicht gefunden:", flugdaten_pfad))
 }
 
-flugdaten_tbl <-
+vorbeiflugdaten_tbl <-
   tbl(con, sql(
     glue::glue(
       "
@@ -57,39 +57,57 @@ flugdaten_tbl <-
     )
   )) |>
   rename_with(make_clean_names) 
-# |>  mutate(across(ends_with("_utc"), ~ dmy_hms(tz = "UTC")))
-# |>
-#   mutate(across(
-#     ends_with("_utc"),
-#     ~ dmy_hms(tz = 'Europe/Berlin'),
-#     .names = "{.col}_lokal"
-#   ))
+```
+
+```{r flugdaten_parquet}
+
+flugdaten_pfad <- "data/UNH/DA-Wixhausen_DEP_15.09.2025.csv"
+
+flugdaten_pfad <- normalizePath(flugdaten_pfad)
+# Prüfe, ob die Datei existiert
+if (!file.exists(flugdaten_pfad)) {
+  stop(paste("FEHLER: Flugdaten-Datei nicht gefunden:", flugdaten_pfad))
+}
+
+query <- glue::glue_sql("
+  SELECT * FROM read_csv({flugdaten_pfad}, 
+                         decimal_separator = ',', 
+                         delim = ';', 
+                         header = TRUE)
+", .con = con)
+
+raw_data <- dbGetQuery(con, query)
+raw_data %>% 
+  rename_with(make_clean_names) %>% 
+  dbWriteTable(con, "vorbeiflugdaten", ., overwrite = TRUE)
+
+```
 
 
-flugdaten_tbl |>
+Anfang der Flugdatenliste:
+
+```{r}
+vorbeiflugdaten_tbl <- tbl(con, "vorbeiflugdaten")
+
+vorbeiflugdaten_tbl |>
   head(3) |>
   collect()
 
-dbRemoveTable(con, "flugdaten", force = TRUE)
+```
 
-flugdaten_tbl |>
-  compute(name = "flugdaten",
-          temporary = FALSE,
-          overwrite = TRUE)
-
-colnames(flugdaten_tbl)
-flugdaten_tbl|>
+Graphische Darstellung der Flugdaten:
+```{r}
+vorbeiflugdaten_tbl|>
   ggplot(aes(x=laterale_abweichung_m,vertikale_abweichung_m,color=flugzeugtyp)) +
   geom_point() +
   labs(title="Flugdaten: Laterale vs. Vertikale Abweichung",
        x="Laterale Abweichung (m)",
        y="Vertikale Abweichung (m)",
        color="Flugzeugtyp")
-  
-
 ```
 
-Falls das nicht klappt, sollte man nochmal in R mithilfe von lubridate nacharbeiten.
+
+Falls das Bereinigen nicht geklappt hat, sollte man nochmal in R mithilfe von lubridate nacharbeiten.
 ```{r schnipselLubridate}
 #mutate(
 #     startzeit_utc = dmy_hms(startzeit_utc, tz = "UTC"),
@@ -124,7 +142,7 @@ dbGetQuery(con, "SELECT * FROM pegelschrieb ORDER BY RANDOM() LIMIT 5;")
 
 
 ```{r dbplyrZeitfenster}
-messwerte_tbl <-
+pegelschrieb_tbl <-
   tbl(con, "pegelschrieb") |>
   dbplyr::window_order(ts) |>
   group_by(station) |>
@@ -142,7 +160,7 @@ messwerte_tbl <-
          perz90 = quantile(pegel,probs=0.9))
 
 
-vorbeiflug_zeitfenster_tbl <- messwerte_tbl |>
+vorbeiflug_zeitfenster_tbl <- pegelschrieb_tbl |>
   filter(vorbeiflugfenster > 0) |>
   mutate(
     fenster_start = ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
@@ -190,17 +208,17 @@ Ein Flug "passt" zu einem Zeitfenster, wenn sein Schnittpunkt-Zeitstempel innerh
 ```{r verschneidungdbplyr}
 # tbl-Referenzen
 zeitfenster_tbl <- tbl(con, "vorbeiflug_zeitfenster")
-flugdaten_tbl   <- tbl(con, "flugdaten")
+vorbeiflugdaten_tbl   <- tbl(con, "flugdaten")
 
 colnames(zeitfenster_tbl)
-colnames(flugdaten_tbl)
+colnames(vorbeiflugdaten_tbl)
 colnames(vorbeiflug_zeitfenster_tbl)
 
 
 vorbeiflug_flug_zuordnung_tbl <-
   zeitfenster_tbl |>
   cross_join(
-    flugdaten_tbl
+    vorbeiflugdaten_tbl
   ) |>
   filter(
     zeitpunkt_des_schnittpunktes_utc >= fenster_start,
@@ -213,7 +231,7 @@ vorbeiflug_flug_zuordnung_tbl <-
   ) 
 
 bla <- left_join(
-  flugdaten_tbl,
+  vorbeiflugdaten_tbl,
   vorbeiflug_zeitfenster_tbl,
   by = join_by(zeitpunkt_des_schnittpunktes_utc == ts )
 ) %>% 
@@ -228,7 +246,7 @@ bla <- left_join(
 vorbeiflug_flug_zuordnung_tbl <- 
   vorbeiflug_flug_zuordnung_tbl %>%
   anti_join(
-    flugdaten_tbl, by = "dfs_flight_id"  # <- oder passendes Join-Feld
+    vorbeiflugdaten_tbl, by = "dfs_flight_id"  # <- oder passendes Join-Feld
   ) %>%
   mutate(
     zeitdiff_sekunden = NA_real_,
@@ -259,25 +277,25 @@ vorbeiflug_flug_zuordnung_tbl |>
 
 
 ```{r}
-messwerte_tbl <- tbl(con, "pegelschrieb")
-flugdaten_tbl <- tbl(con, "flugdaten")
+pegelschrieb_tbl <- tbl(con, "pegelschrieb")
+vorbeiflugdaten_tbl <- tbl(con, "flugdaten")
 zeitfenster_tbl <- tbl(con, "vorbeiflug_zeitfenster")
 verschneidung_tbl <- tbl(con, "vorbeiflug_flug_zuordnung")
-colnames(messwerte_tbl)
-colnames(flugdaten_tbl)
+colnames(pegelschrieb_tbl)
+colnames(vorbeiflugdaten_tbl)
 colnames(zeitfenster_tbl)
 colnames(verschneidung_tbl)
 
 bla<-verschneidung_tbl %>% 
   collect()
 
-messwerte_tbl %>%
+pegelschrieb_tbl %>%
   filter(datum == "2025-09-15") %>%
   #  filter(vorbeiflug == 1) %>%
   ggplot(aes(x = ts, y = pegel)) +
   geom_line() +
  geom_point(
-    data = messwerte_tbl %>%
+    data = pegelschrieb_tbl %>%
       filter(datum == "2025-09-15") %>%
       filter(vorbeiflug == 1),
     aes(x = ts, y = pegel),shape=1
@@ -297,7 +315,7 @@ messwerte_tbl %>%
     inherit.aes = FALSE
   ) +
   geom_vline(
-    data = flugdaten_tbl,
+    data = vorbeiflugdaten_tbl,
     aes(xintercept = zeitpunkt_des_schnittpunktes_utc),
     color = "blue",
     inherit.aes = FALSE
