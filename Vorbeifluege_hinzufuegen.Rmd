@@ -31,35 +31,7 @@ dbExecute(con, "LOAD icu;")
 
 Die Excel-Datei enthält Flugdaten mit Zeitstempeln in UTC, hoffentlich versteht es die Datenbank korrekt.
 
-
 ```{r flugdaten_einlesen}
-
-flugdaten_pfad <- "data/UNH/DA-Wixhausen_DEP_15.09.2025.csv"
-
-flugdaten_pfad <- normalizePath(flugdaten_pfad)
-# Prüfe, ob die Datei existiert
-if (!file.exists(flugdaten_pfad)) {
-  stop(paste("FEHLER: Flugdaten-Datei nicht gefunden:", flugdaten_pfad))
-}
-
-vorbeiflugdaten_tbl <-
-  tbl(con, sql(
-    glue::glue(
-      "
-      SELECT *
-      FROM read_csv_auto(
-        '{flugdaten_pfad}',
-        delim=';',
-        decimal_separator=',',
-        header=true
-      )
-    "
-    )
-  )) |>
-  rename_with(make_clean_names) 
-```
-
-```{r flugdaten_parquet}
 
 flugdaten_pfad <- "data/UNH/DA-Wixhausen_DEP_15.09.2025.csv"
 
@@ -141,45 +113,23 @@ dbGetQuery(con, "SELECT * FROM pegelschrieb ORDER BY RANDOM() LIMIT 5;")
 
 
 
-```{r dbplyrZeitfenster}
-pegelschrieb_tbl <-
+```{r fenster_an_pegelschrieb}
+pegelschrieb_m_fenster_tbl <-
   tbl(con, "pegelschrieb") |>
   dbplyr::window_order(ts) |>
   group_by(station) |>
   #  filter(vorbeiflug == 1) |>
   mutate(
     peak_zeit = case_when(vorbeiflug == 1 ~ ts, TRUE ~ NA),
-    zeitfenster_id = case_when(vorbeiflug == 1 ~ row_number(), TRUE ~ NA)
+    akust_ereignis_id = case_when(vorbeiflug == 1 ~ row_number(), TRUE ~ NA)
   ) |>
   dbplyr::window_frame(from = -sekunden_vorher, to = sekunden_nachher) |>
   mutate(vorbeiflugfenster = sum(vorbeiflug),
-         zeitfenster_id=max(zeitfenster_id, na.rm = TRUE)#die ID soll in jeder Zeile des Fensters stehen
+         akust_ereignis_id=max(akust_ereignis_id, na.rm = TRUE)#die ID soll in jeder Zeile des Fensters stehen
          )|>
   dbplyr::window_frame(from = -3600, to = 0) |>
   mutate(perz10 = quantile(pegel,probs=0.1),
          perz90 = quantile(pegel,probs=0.9))
-
-
-vorbeiflug_zeitfenster_tbl <- pegelschrieb_tbl |>
-  filter(vorbeiflugfenster > 0) |>
-  mutate(
-    fenster_start = ts - sql(glue::glue("INTERVAL '{sekunden_vorher} seconds'")),
-    fenster_ende  = ts + sql(glue::glue("INTERVAL '{sekunden_nachher} seconds'"))
-  )
-
-# vorbeiflug_zeitfenster_tbl %>% 
-#   filter(station==74) %>% 
-#   filter(tageszeit=="E") %>% 
-#   filter(vorbeiflugfenster>0) %>% 
-#   collect()
-# 
-
-vorbeiflug_zeitfenster_tbl |>
-  compute(
-    name = "vorbeiflug_zeitfenster",
-    temporary = FALSE,
-    overwrite = TRUE
-  )
 
 
 ```
@@ -189,8 +139,8 @@ vorbeiflug_zeitfenster_tbl |>
 Insgesamt wurden 
 
 ```{r anzahlAkustEreigniss}
-vorbeiflug_zeitfenster_tbl %>% 
-  group_by(station,zeitfenster_id) %>% 
+pegelschrieb_m_fenster_tbl %>% 
+  group_by(station,akust_ereignis_id) %>% 
   summarize %>% 
   ungroup() %>% 
   group_by(station) %>% 
@@ -202,41 +152,42 @@ Zeitfenster zu akustischen Ereignissen, die wahrscheinlichen Flugereignissen sin
 
 ## Verschneidung - Welche Flüge passen zu welchen Zeitfenstern?
 
-Jetzt verknüpfen wir die Zeitfenster mit den Flugdaten.
+Jetzt verknüpfen wir die Zeitfenster mit den Vorbeiflugdaten.
 Ein Flug "passt" zu einem Zeitfenster, wenn sein Schnittpunkt-Zeitstempel innerhalb des Zeitfensters liegt.
 
-```{r verschneidungdbplyr}
-# tbl-Referenzen
-zeitfenster_tbl <- tbl(con, "vorbeiflug_zeitfenster")
-vorbeiflugdaten_tbl   <- tbl(con, "flugdaten")
-
-colnames(zeitfenster_tbl)
-colnames(vorbeiflugdaten_tbl)
-colnames(vorbeiflug_zeitfenster_tbl)
-
-
-vorbeiflug_flug_zuordnung_tbl <-
-  zeitfenster_tbl |>
-  cross_join(
-    vorbeiflugdaten_tbl
+```{r join_fluege}
+pegelschrieb_m_fenster_flug_tbl <-
+  full_join(
+    vorbeiflugdaten_tbl,
+    pegelschrieb_m_fenster_tbl,
+    by = join_by("zeitpunkt_des_schnittpunktes_utc" == "ts")
   ) |>
-  filter(
-    zeitpunkt_des_schnittpunktes_utc >= fenster_start,
-    zeitpunkt_des_schnittpunktes_utc <= fenster_ende
-  ) |>
-  mutate(
-    # Zeitdifferenz in Sekunden
-    zeitdiff_sekunden = sql("EPOCH(zeitpunkt_des_schnittpunktes_utc - peak_zeitpunkt)"),
-    im_zeitfenster = 'JA'
-  ) 
+  mutate(zeitdiff_sekunden = sql("EPOCH(zeitpunkt_des_schnittpunktes_utc - peak_zeit)"))
 
-bla <- left_join(
-  vorbeiflugdaten_tbl,
-  vorbeiflug_zeitfenster_tbl,
-  by = join_by(zeitpunkt_des_schnittpunktes_utc == ts )
-) %>% 
-  collect()
+akust_fenster_u_vorbeiflug_tbl<-pegelschrieb_m_fenster_flug_tbl|>
+  filter(!is.na(dfs_flight_id)|!is.na(akust_ereignis_id))|>
+  mutate(ereignis_id=paste0(dfs_flight_id,akust_ereignis_id))
 
+
+```
+
+Graphisch sieht das so aus:
+
+```{r akust_fenster_u_vorbeiflug_graph}
+
+akust_fenster_u_vorbeiflug_tbl %>% 
+  colnames()
+akust_fenster_u_vorbeiflug_tbl %>%
+  filter(datum == "2025-09-15") %>%
+  ggplot(aes(x = zeitpunkt_des_schnittpunktes_utc,
+             y = pegel,
+             color = gesellschaft)) +
+  geom_point()+
+  facet_grid(vars(station)) +
+  coord_cartesian(xlim = c(
+    as_datetime("2025-09-15 15:05:00"),
+    as_datetime("2025-09-15 19:35:00")
+  ))
 ```
 
 
@@ -255,7 +206,7 @@ vorbeiflug_flug_zuordnung_tbl <-
     im_zeitfenster = 'NEIN'
   ) %>% 
   anti_join(
-    zeitfenster_tbl, by = "zeitfenster_id"  # <- oder passendes Join-Feld
+    zeitfenster_tbl, by = "akust_ereignis_id"  # <- oder passendes Join-Feld
   ) %>%
   mutate(
     peak_zeitpunkt = NA,
@@ -277,11 +228,11 @@ vorbeiflug_flug_zuordnung_tbl |>
 
 
 ```{r}
-pegelschrieb_tbl <- tbl(con, "pegelschrieb")
+pegelschrieb_m_fenster_tbl <- tbl(con, "pegelschrieb")
 vorbeiflugdaten_tbl <- tbl(con, "flugdaten")
 zeitfenster_tbl <- tbl(con, "vorbeiflug_zeitfenster")
 verschneidung_tbl <- tbl(con, "vorbeiflug_flug_zuordnung")
-colnames(pegelschrieb_tbl)
+colnames(pegelschrieb_m_fenster_tbl)
 colnames(vorbeiflugdaten_tbl)
 colnames(zeitfenster_tbl)
 colnames(verschneidung_tbl)
@@ -289,13 +240,13 @@ colnames(verschneidung_tbl)
 bla<-verschneidung_tbl %>% 
   collect()
 
-pegelschrieb_tbl %>%
+pegelschrieb_m_fenster_tbl %>%
   filter(datum == "2025-09-15") %>%
   #  filter(vorbeiflug == 1) %>%
   ggplot(aes(x = ts, y = pegel)) +
   geom_line() +
  geom_point(
-    data = pegelschrieb_tbl %>%
+    data = pegelschrieb_m_fenster_tbl %>%
       filter(datum == "2025-09-15") %>%
       filter(vorbeiflug == 1),
     aes(x = ts, y = pegel),shape=1
@@ -360,7 +311,7 @@ verschneidung_tbl %>%
 zuordnung_stats <- dbGetQuery(con, "
   SELECT
     im_zeitfenster,
-    COUNT(DISTINCT zeitfenster_id) AS anzahl_zeitfenster,
+    COUNT(DISTINCT akust_ereignis_id) AS anzahl_zeitfenster,
     COUNT(flug_id) AS anzahl_zuordnungen
   FROM vorbeiflug_flug_zuordnung
   GROUP BY im_zeitfenster
@@ -374,7 +325,7 @@ cat("\n5 Beispiel-Zuordnungen:\n")
 print(
   dbGetQuery(con, "
     SELECT 
-      zeitfenster_id, 
+      akust_ereignis_id, 
       station, 
       peak_zeitpunkt, 
       callsign, 
@@ -401,7 +352,7 @@ Du siehst:
 # Lade die Zuordnungsdaten
 zuordnung_data <- dbGetQuery(con, "
   SELECT 
-    zeitfenster_id,
+    akust_ereignis_id,
     station,
     peak_zeitpunkt,
     peak_pegel,
@@ -439,12 +390,12 @@ if (nrow(zuordnung_data) > 0) {
   zuordnung_pro_station <- dbGetQuery(con, "
     SELECT
       station,
-      COUNT(DISTINCT zeitfenster_id) AS zeitfenster_gesamt,
-      COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN zeitfenster_id END) 
+      COUNT(DISTINCT akust_ereignis_id) AS zeitfenster_gesamt,
+      COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN akust_ereignis_id END) 
         AS zeitfenster_mit_flug,
       ROUND(
-        100.0 * COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN zeitfenster_id END) 
-        / COUNT(DISTINCT zeitfenster_id), 
+        100.0 * COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN akust_ereignis_id END) 
+        / COUNT(DISTINCT akust_ereignis_id), 
         1
       ) AS zuordnungsrate_prozent
     FROM vorbeiflug_flug_zuordnung
@@ -495,12 +446,12 @@ Mit dieser Info kannst du entscheiden, ob du n und m anpassen solltest.
 zusammenfassung <- dbGetQuery(con, "
   SELECT
     station,
-    COUNT(DISTINCT zeitfenster_id) AS vorbeiflüge_gesamt,
-    COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN zeitfenster_id END) 
+    COUNT(DISTINCT akust_ereignis_id) AS vorbeiflüge_gesamt,
+    COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN akust_ereignis_id END) 
       AS vorbeiflüge_mit_flug,
     ROUND(
-      100.0 * COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN zeitfenster_id END) 
-      / COUNT(DISTINCT zeitfenster_id), 
+      100.0 * COUNT(DISTINCT CASE WHEN im_zeitfenster = 'JA' THEN akust_ereignis_id END) 
+      / COUNT(DISTINCT akust_ereignis_id), 
       1
     ) AS zuordnungsrate_prozent,
     ROUND(AVG(CASE WHEN im_zeitfenster = 'JA' THEN zeitdiff_sekunden END), 1) 
@@ -553,7 +504,7 @@ zeitreihe_data <- dbGetQuery(con, glue::glue("
     m.station,
     m.pegel,
     m.vorbeiflug,
-    z.zeitfenster_id,
+    z.akust_ereignis_id,
     z.peak_zeitpunkt,
     f.callsign,
     f.flugzeugtyp
@@ -561,7 +512,7 @@ zeitreihe_data <- dbGetQuery(con, glue::glue("
   LEFT JOIN vorbeiflug_zeitfenster z
     ON m.station = z.station AND m.ts = z.peak_zeitpunkt
   LEFT JOIN vorbeiflug_flug_zuordnung f
-    ON z.zeitfenster_id = f.zeitfenster_id AND f.im_zeitfenster = 'JA'
+    ON z.akust_ereignis_id = f.akust_ereignis_id AND f.im_zeitfenster = 'JA'
   WHERE m.datum = '{beispiel_datum}'
     AND m.station = (SELECT MIN(station) FROM vorbeiflug_zeitfenster WHERE datum = '{beispiel_datum}')
   ORDER BY m.ts
