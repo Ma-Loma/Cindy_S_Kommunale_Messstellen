@@ -227,14 +227,38 @@ dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 
 
 
-```{r pegelschriebView}
-dbExecute(
-  con,
-  "
-  CREATE OR REPLACE VIEW pegelschrieb AS
-  SELECT * FROM 'messwerte'
-  "
-)
+```{r pegelschriebPhysisch}
+
+## die Typecasts machen später hoffentlich das weiterarbeiten schneller
+## doch besser physisch
+# dbExecute(con, "
+# CREATE OR REPLACE VIEW pegelschrieb AS
+# SELECT
+#     zeit,
+#     datum,
+#     station,
+#     ts,
+#     tageszeit,
+#     CAST(vorbeiflug AS INTEGER) AS vorbeiflug,
+#     CAST(pegel AS DOUBLE) AS pegel,
+#     vorhernachher
+# FROM 'messwerte'
+# ")
+
+dbExecute(con, "
+CREATE OR REPLACE TABLE pegelschrieb AS
+SELECT
+    zeit,
+    datum,
+    station,
+    ts,
+    tageszeit,
+    CAST(vorbeiflug AS INTEGER) AS vorbeiflug,
+    CAST(pegel AS DOUBLE) AS pegel,
+    vorhernachher
+FROM 'messwerte'
+ORDER BY station, ts
+")
 
 pegelschrieb_tbl <- tbl(con, "pegelschrieb")
 

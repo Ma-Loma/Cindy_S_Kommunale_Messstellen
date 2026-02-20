@@ -23,6 +23,7 @@ con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_
   ))
 
 dbExecute(con, "LOAD icu;")
+
 ```
 
 
@@ -58,7 +59,7 @@ raw_data %>%
 
 Anfang der Flugdatenliste:
 
-```{r}
+```{r headVorbeiflugdaten}
 vorbeiflugdaten_tbl <- tbl(con, "vorbeiflugdaten")
 
 vorbeiflugdaten_tbl |>
@@ -68,7 +69,7 @@ vorbeiflugdaten_tbl |>
 ```
 
 Graphische Darstellung der Flugdaten:
-```{r}
+```{r vorbeiflugGraph}
 vorbeiflugdaten_tbl|>
   ggplot(aes(x=laterale_abweichung_m,vertikale_abweichung_m,color=flugzeugtyp)) +
   geom_point() +
@@ -94,7 +95,7 @@ Falls das Bereinigen nicht geklappt hat, sollte man nochmal in R mithilfe von lu
  Hier werden erst die Parameter des
 
 ```{r zeitfenster_parameter}
-sekunden_vorher <- 30   # Zeitfenster VOR dem Peak (z.B. 10 Sekunden)
+sekunden_vorher <- 30   # Zeitfenster VOR dem Peak (z.B. 30 Sekunden)
 sekunden_nachher <- 10   # Zeitfenster nach dem Peak (z.B. 10 Sekunden)
 
 cat("Zeitfenster mit ", sekunden_vorher, "Sekunden vor und ",
@@ -102,20 +103,183 @@ cat("Zeitfenster mit ", sekunden_vorher, "Sekunden vor und ",
 ```
 dem Pegelmaximum festgelegt, welches mit "vorbeiflug = 1" als wahrscheinliches Ereignis vom DFLD klassifiziert wurde.
 
-```{r}
+```{r tabellePegelschrieb}
 dbListTables(con)
+
 dbListFields(con, "pegelschrieb")
-cat("5 zufällige Zeilen der Tabelle:\n")
-dbGetQuery(con, "SELECT * FROM pegelschrieb ORDER BY RANDOM() LIMIT 5;")
 
 ```
 
+Fünf zufällige Zeilen aus aus der Tabelle "pegelschrieb":
+
+```{r pegelschrieb5zeilen}
+dbGetQuery(con, "SELECT * FROM pegelschrieb ORDER BY RANDOM() LIMIT 5;")
+pegelschrieb_tbl<-
+  tbl(con, "pegelschrieb")
+```
+
+```{r}
+
+# Ereignis-ID + ±Fenster
+dbExecute(con, glue::glue("
+CREATE OR REPLACE TABLE pegelschrieb_m_fenster AS
+WITH basis AS (
+    SELECT
+        *,
+        CASE WHEN vorbeiflug = 1 THEN
+            ROW_NUMBER() OVER (PARTITION BY station ORDER BY ts)
+        ELSE NULL END AS akust_ereignis_id_raw
+    FROM pegelschrieb
+)
+SELECT
+    *,
+    SUM(vorbeiflug) OVER (
+        PARTITION BY station
+        ORDER BY ts
+        ROWS BETWEEN {sekunden_vorher} PRECEDING AND {sekunden_nachher} FOLLOWING
+    ) AS vorbeiflugfenster,
+
+    MAX(akust_ereignis_id_raw) OVER (
+        PARTITION BY station
+        ORDER BY ts
+        ROWS BETWEEN {sekunden_vorher} PRECEDING AND {sekunden_nachher} FOLLOWING
+    ) AS akust_ereignis_id
+
+FROM basis
+"))
+
+pegelschrieb_m_fenster_tbl <-
+  tbl(con,"pegelschrieb_m_fenster")
+  # pegelschrieb_tbl |>
+  # arrange(station, ts) |>
+  # group_by(station) |>
+  # mutate(
+  #   peak_zeit = if_else(vorbeiflug == 1, ts, as.POSIXct(NA)),
+  #   akust_ereignis_id_raw =
+  #     if_else(vorbeiflug == 1,
+  #             row_number(),
+  #             NA_integer_)
+  # )|>
+  # window_order(ts) |>
+  # window_frame(-sekunden_vorher, sekunden_nachher) |>
+  # mutate(
+  #   vorbeiflugfenster = sum(vorbeiflug, na.rm = TRUE),
+  #   akust_ereignis_id =
+  #     max(akust_ereignis_id_raw, na.rm = TRUE)
+  # )
+  # 
+
+
+```
+
+```{r perzentilenberechnung}
+
+quantile_interval <- 300 # alle 5 Minuten ~ 300 Zeilen
+
+dbExecute(con, glue::glue("
+CREATE OR REPLACE TABLE pegelschrieb_final AS
+WITH basis AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY station ORDER BY ts) AS rn
+    FROM pegelschrieb_m_fenster
+),
+quantile_calc AS (
+    SELECT *,
+           CASE WHEN rn % {quantile_interval} = 1 THEN
+               approx_quantile(pegel, 0.1) OVER (
+                 PARTITION BY station
+                 ORDER BY ts
+                 ROWS BETWEEN 1800 PRECEDING AND 1800 FOLLOWING
+               )
+           END AS perz10_raw,
+           CASE WHEN rn % {quantile_interval} = 1 THEN
+               approx_quantile(pegel, 0.9) OVER (
+                 PARTITION BY station
+                 ORDER BY ts
+                 ROWS BETWEEN 1800 PRECEDING AND 1800 FOLLOWING
+               )
+           END AS perz90_raw
+    FROM basis
+)
+SELECT *,
+       -- Vorwärts füllen, damit jede Sekunde einen Perzentilwert bekommt
+       LAST_VALUE(perz10_raw IGNORE NULLS) OVER (
+           PARTITION BY station ORDER BY ts
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) AS perz10,
+       LAST_VALUE(perz90_raw IGNORE NULLS) OVER (
+           PARTITION BY station ORDER BY ts
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) AS perz90
+FROM quantile_calc
+"))
+```
+
+
+Hier teste, wie vollständig die Daten des Pegelschriebs vorliegen. Aufgrund der Verwendung lokaler Zeit sind bei der Zeitumstellung Sprünge normal.
+
+```{sql connection=con}
+SELECT
+    station,
+    COUNT(*) FILTER (WHERE diff <> INTERVAL '1 second') AS anzahl_zeitluecken,
+    COUNT(*) FILTER (WHERE diff > INTERVAL '3600 seconds') AS anzahl_zeitluecken_ue_1std,
+    COUNT(*) FILTER (WHERE diff > INTERVAL '86400 seconds') AS anzahl_zeitluecken_ue_1tag
+FROM (
+    SELECT
+        station,
+        ts - LAG(ts) OVER (PARTITION BY station ORDER BY ts) AS diff
+    FROM pegelschrieb
+) t
+WHERE diff IS NOT NULL
+GROUP BY station
+ORDER BY station ASC;
+
+```
+
+```{r}
+first_event <- dbGetQuery(con, "
+SELECT MIN(ts) AS ts
+FROM pegelschrieb_m_fenster
+WHERE vorbeiflug = 1
+")$ts
+
+first_event
+
+dbGetQuery(con, glue::glue("
+SELECT *
+FROM pegelschrieb_m_fenster
+WHERE ts = '{first_event}'"))
+
+
+dbGetQuery(con, glue::glue("
+SELECT *
+FROM pegelschrieb_m_fenster
+WHERE ts BETWEEN TIMESTAMPTZ '{first_event} UTC' - INTERVAL 60 SECOND
+            AND TIMESTAMPTZ '{first_event} UTC' + INTERVAL 60 SECOND
+"))|>
+  #filter(station==289)|>
+  ggplot(aes(x = ts,
+           y = pegel,
+           color = factor(vorbeiflug))) +
+  geom_point() +
+  scale_color_manual(values = c("black", "red"),
+                     na.value = "grey50") +
+  facet_wrap(vars(station))+
+  labs(color = "vorbeiflug")
+  
+
+```
+
+
+```{sql connection=con}
+DESCRIBE pegelschrieb_m_fenster
+```
 
 
 
 ```{r fenster_an_pegelschrieb}
 pegelschrieb_m_fenster_tbl <-
-  tbl(con, "pegelschrieb") |>
+  pegelschrieb_tbl|>
   dbplyr::window_order(ts) |>
   group_by(station) |>
   #  filter(vorbeiflug == 1) |>
@@ -132,11 +296,25 @@ pegelschrieb_m_fenster_tbl <-
          perz90 = quantile(pegel,probs=0.9))
 
 
+
+
 ```
 
 
 
 Insgesamt wurden 
+
+```{sql connection=con}
+
+SELECT 
+    station,
+    COUNT(DISTINCT akust_ereignis_id) AS Anzahl_akustischeEreignisse
+FROM pegelschrieb_m_fenster
+GROUP BY station;
+
+
+```
+
 
 ```{r anzahlAkustEreigniss}
 pegelschrieb_m_fenster_tbl %>% 
