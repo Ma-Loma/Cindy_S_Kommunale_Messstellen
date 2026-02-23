@@ -184,31 +184,24 @@ tmp_tbl<-
   tbl(con,"tmp")
 colnames(tmp_tbl)
 
+akust_ereignis_plot <- function(data,von,bis) {
+  data %>% 
+    filter(datum==as_date(von)) %>% 
+    ggplot(aes(x = ts, y = pegel)) + 
+    geom_line() +
+    geom_line(
+      data = . %>% filter(vorbeiflugfenster == 1),
+      color = "green",
+      aes(group = akust_ereignis_id)
+    ) +
+    geom_point(data = . %>% filter(vorbeiflug == 1),
+               color = "green")+
+    xlim(c(as_datetime(von),as_datetime(bis)))
+}
 
+akust_ereignis_plot(pegelschrieb_m_fenster_tbl,"2024-11-08 10:00:00","2024-11-08 11:00:00")
 
-  
-  
-tmp_tbl %>%   
-  filter(datum == "2024-11-08") %>%
-  collect() %>% 
-  ggplot(aes(x = ts, y = pegel)) + 
-  geom_line() +
-  geom_line(
-    data = . %>% filter(vorbeiflugfenster == 1),
-    color = "green",
-    aes(group = akust_ereignis_id)
-  ) +
-  geom_point(data = . %>% filter(vorbeiflug == 1),
-             color = "green")+
-  xlim(c(as_datetime("2024-11-08 10:00:00"),as_datetime("2024-11-08 11:00:00")))
 ```
-```{r}
-tmp_tbl %>% 
-  filter(vorbeiflug==1) %>% 
-  group_by(datum) %>% 
-  summarise(n=n())
-```
-
 
 ```{r perzentilenberechnung}
 
@@ -281,7 +274,7 @@ FROM pegelschrieb_m_fenster
 WHERE vorbeiflug = 1
 ")$ts
 
-first_event
+
 
 dbGetQuery(con, glue::glue("
 SELECT *
@@ -289,22 +282,9 @@ FROM pegelschrieb_m_fenster
 WHERE ts = '{first_event}'"))
 
 
-dbGetQuery(con, glue::glue("
-SELECT *
-FROM pegelschrieb_m_fenster
-WHERE ts BETWEEN TIMESTAMPTZ '{first_event} UTC' - INTERVAL 60 SECOND
-            AND TIMESTAMPTZ '{first_event} UTC' + INTERVAL 60 SECOND
-"))|>
-  #filter(station==289)|>
-  ggplot(aes(x = ts,
-           y = pegel,
-           color = factor(vorbeiflug))) +
-  geom_point() +
-  scale_color_manual(values = c("black", "red"),
-                     na.value = "grey50") +
-  facet_wrap(vars(station))+
-  labs(color = "vorbeiflug")
-  
+pegelschrieb_m_fenster_tbl %>% 
+  akust_ereignis_plot(first_event-dseconds(60),first_event+dseconds(90))+
+  facet_wrap(vars(station))
 
 ```
 
