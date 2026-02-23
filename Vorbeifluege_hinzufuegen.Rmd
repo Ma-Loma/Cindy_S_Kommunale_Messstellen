@@ -118,6 +118,7 @@ pegelschrieb_tbl<-
   tbl(con, "pegelschrieb")
 ```
 
+
 ```{r}
 
 # Ereignis-ID + ±Fenster
@@ -169,8 +170,45 @@ pegelschrieb_m_fenster_tbl <-
   # )
   # 
 
-
 ```
+
+```{sql connection=con}
+--CREATE TABLE tmp AS
+--SELECT * FROM pegelschrieb_m_fenster LIMIT 1e6;--WHERE station = 123;
+
+DESCRIBE tmp;
+```
+
+```{r plotte_akust_ereignisse}
+tmp_tbl<-
+  tbl(con,"tmp")
+colnames(tmp_tbl)
+
+
+
+  
+  
+tmp_tbl %>%   
+  filter(datum == "2024-11-08") %>%
+  collect() %>% 
+  ggplot(aes(x = ts, y = pegel)) + 
+  geom_line() +
+  geom_line(
+    data = . %>% filter(vorbeiflugfenster == 1),
+    color = "green",
+    aes(group = akust_ereignis_id)
+  ) +
+  geom_point(data = . %>% filter(vorbeiflug == 1),
+             color = "green")+
+  xlim(c(as_datetime("2024-11-08 10:00:00"),as_datetime("2024-11-08 11:00:00")))
+```
+```{r}
+tmp_tbl %>% 
+  filter(vorbeiflug==1) %>% 
+  group_by(datum) %>% 
+  summarise(n=n())
+```
+
 
 ```{r perzentilenberechnung}
 
@@ -181,7 +219,7 @@ CREATE OR REPLACE TABLE pegelschrieb_final AS
 WITH basis AS (
     SELECT *,
            ROW_NUMBER() OVER (PARTITION BY station ORDER BY ts) AS rn
-    FROM pegelschrieb_m_fenster
+    FROM tmp--pegelschrieb_m_fenster
 ),
 quantile_calc AS (
     SELECT *,
