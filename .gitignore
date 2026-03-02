@@ -1,8 +1,9 @@
 # data files
-/data/*.csv
-/data/*.xlsx
+*.csv
+*.xlsx
+*.parquet
 # Database related files
-/data/*.duckdb*
+*.duckdb*
 /duckdb_extensions*
 
 # History files
@@ -11,7 +12,8 @@
 
 # Session Data files
 .RData
-.RDataTmp
+*.RDataTmp
+*.html
 
 # User-specific files
 .Ruserdata
