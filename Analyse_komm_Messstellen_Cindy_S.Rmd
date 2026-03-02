@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo=FALSE)
 rm(list = ls())
 library(tidyverse)
 library(DBI)
-library(duckdb)
+library(RPostgreSQL)
 library(dbplyr)
 
 
@@ -21,7 +21,8 @@ library(dbplyr)
 Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD. 
 Sie werden hier in eine Datenbank (DuckDB) eingelesen und dort bearbeitet. Das ermöglicht ein leichtes Skalieren auf größere Datenmengen, ohne durch Arbeitsspeicher eingeschränkt zu sein.
 
-```{r pruefe_rohdaten_u_DuckDB}}
+```{r pruefe_rohdaten_u_PostgreSQL}}
+drv <- DBI::dbDriver("PostgreSQL")
 
 if (exists("con")) {
   if (dbIsValid(con)) {
