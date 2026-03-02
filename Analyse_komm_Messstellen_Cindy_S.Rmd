@@ -8,8 +8,8 @@ output: word_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE)
 .libPaths(r"(M:\R\library-4.5.2)")
-packagelist<-c("dbplyr","tidyverse","readxl","lubridate","zoo","purrr","janitor","rmarkdown","data.table","knitr","DBI","RPostgreSQL")
-install.packages(packagelist, lib="M:/R/library-4.5.2")
+# packagelist<-c("dbplyr","tidyverse","readxl","lubridate","zoo","purrr","janitor","rmarkdown","data.table","knitr","DBI","RPostgreSQL")
+# install.packages(packagelist, lib="M:/R/library-4.5.2")
 rm(list = ls())
 library(tidyverse)
 library(DBI)
@@ -29,7 +29,6 @@ username <- rstudioapi::askForPassword("Database username")
 password <- rstudioapi::askForPassword("Database password")
 
 drv <- DBI::dbDriver("PostgreSQL")
-dbHasCompleted(con)
 if (exists("con")) {
     message("Verbindung zur PostgreSQL Datenbank wird geschlossen.")
     dbDisconnect(con, shutdown = TRUE)
@@ -69,17 +68,15 @@ message(
 Nun werden ggf. die Rohdaten in die Datenbank eingelesen:
 
 ```{r uebertrage_rohdaten_in_db}
-
+locale(tz = "Europe/Berlin")
 if (n_db == length_all_files) {
-
   message(
     "Die Daten sind bereits vollständig in der Datenbank vorhanden. Keine Aktion erforderlich."
   )
-
+  
 } else {
-
   message("Die Daten werden in die Datenbank eingelesen.")
-
+  
   # --- Tabelle messwerte ggf. löschen ---
   if ("messwerte" %in% dbListTables(con)) {
     message("Tabelle messwerte existiert bereits. Lösche sie und erstelle sie neu.")
@@ -87,26 +84,25 @@ if (n_db == length_all_files) {
   } else {
     message("Tabelle messwerte existiert nicht. Erstelle sie neu.")
   }
-
+  
   # --- Tabelle neu anlegen ---
   dbCreateTable(
     con,
     "messwerte",
     fields = c(
-      zeit = "CHARACTER",
+      zeit = "TIMESTAMPTZ",
       pegelRoh = "INTEGER",
       datum = "DATE",
       station = "INTEGER"
     )
   )
-
+  message("Tabelle 'messwerte' wurde geschaffen.")
   # --- Dateien einlesen und schreiben ---
   for (file in files) {
-
     datei_name <- tools::file_path_sans_ext(basename(file))
     datum <- str_extract(datei_name, "\\d{8}")
     station <- str_remove(datei_name, paste0(datum, "-"))
-
+    #message("lese ", datei_name)
     data <- read_delim(
       file,
       delim = ";",
@@ -120,14 +116,19 @@ if (n_db == length_all_files) {
     ) %>%
       mutate(
         datum = as.Date(datum, format = "%Y%m%d"),
+        zeit = as.POSIXct(paste(datum, zeit), tz = "Europe/Berlin"),
         station = station
       )
-    data<-data %>% 
-      mutate
-
-    dbAppendTable(con, "messwerte", data)
+    
+    #message("jetzt hänge Datei ", datei_name, " an")
+    dbWriteTable(con,
+                 "messwerte",
+                 data,
+                 append = TRUE,
+                 row.names = FALSE)
   }
 }
+# message("Alle Messwerte eingelesen")
 ```
 
 
