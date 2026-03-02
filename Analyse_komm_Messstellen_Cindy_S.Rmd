@@ -7,26 +7,28 @@ output: word_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE)
+.libPaths(r"(M:\R\library-4.5.2)")
+packagelist<-c("dbplyr","tidyverse","readxl","lubridate","zoo","purrr","janitor","rmarkdown","data.table","knitr","DBI","RPostgreSQL")
+install.packages(packagelist, lib="M:/R/library-4.5.2")
 rm(list = ls())
 library(tidyverse)
 library(DBI)
 library(RPostgreSQL)
 library(dbplyr)
 
-
 ```
 
 ## Daten
 
 Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD. 
-Sie werden hier in eine Datenbank (DuckDB) eingelesen und dort bearbeitet. Das ermöglicht ein leichtes Skalieren auf größere Datenmengen, ohne durch Arbeitsspeicher eingeschränkt zu sein.
+Sie werden hier in eine Datenbank (PostgreSQL) eingelesen und dort bearbeitet. Das ermöglicht ein leichtes Skalieren auf größere Datenmengen, ohne durch Arbeitsspeicher eingeschränkt zu sein.
 
 ```{r pruefe_rohdaten_u_PostgreSQL}}
 drv <- DBI::dbDriver("PostgreSQL")
 
 if (exists("con")) {
   if (dbIsValid(con)) {
-    message("Verbindung zur DuckDB Datenbank wird geschlossen.")
+    message("Verbindung zur PostgreSQL Datenbank wird geschlossen.")
     dbDisconnect(con, shutdown = TRUE)
   }
   rm(con)
