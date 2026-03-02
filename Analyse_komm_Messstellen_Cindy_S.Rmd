@@ -24,22 +24,23 @@ Die Daten wurden am 22.1.2026 bereitgestellt von Horst Weise, DFLD.
 Sie werden hier in eine Datenbank (PostgreSQL) eingelesen und dort bearbeitet. Das ermöglicht ein leichtes Skalieren auf größere Datenmengen, ohne durch Arbeitsspeicher eingeschränkt zu sein.
 
 ```{r pruefe_rohdaten_u_PostgreSQL}}
-drv <- DBI::dbDriver("PostgreSQL")
 
+username <- rstudioapi::askForPassword("Database username")
+password <- rstudioapi::askForPassword("Database password")
+
+drv <- DBI::dbDriver("PostgreSQL")
+dbHasCompleted(con)
 if (exists("con")) {
-  if (dbIsValid(con)) {
     message("Verbindung zur PostgreSQL Datenbank wird geschlossen.")
     dbDisconnect(con, shutdown = TRUE)
-  }
   rm(con)
 }
   
-con <- dbConnect(duckdb::duckdb(), dbdir = "data/komm_messstellen.duckdb", read_only = FALSE,
-                 config = list(
-    extension_directory = "./duckdb_extensions"
-  ))
-
-dbExecute(con, "LOAD icu;")
+con <- dbConnect(drv, dbname = "fluglaerm",
+                 host="srvhlugwitdw001",
+                 user=username,
+                 password=password
+  )
 
 ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
         {
@@ -47,9 +48,10 @@ ifelse (dbListTables(con) %>% str_detect("messwerte") %>% any(),
           n_db <- messwerte_db %>% count() %>% collect() %>% pull(n)
         },
         n_db <- 0)
+messdatenpfad<-"//srvhlugfaswi002/gruppen/4all.i4/I4.4 - Fluglärm/03 - Daten/FRA/Messdaten/04 Messnetz DFLD/Cindy_S_Kommunale_Messstellen/data/DFLD/"
 
 # sammle alle csv in ./data/ um sie in die Datenbank zu übertragen.
-files <- list.files("data/", pattern = "*.csv", full.names = TRUE)# %>%   sample(4)  # zum Anfangen
+files <- list.files(messdatenpfad, pattern = "*.csv", full.names = TRUE)# %>%   sample(4)  # zum Anfangen
 
 length_one_file <-
   read_lines(sample(files, 1)) %>%
@@ -62,7 +64,6 @@ message(
   " und Sekundenwerte in der Datenbank-Tabelle messwerte: ",
   n_db
 )
-
 ```
 
 Nun werden ggf. die Rohdaten in die Datenbank eingelesen:
