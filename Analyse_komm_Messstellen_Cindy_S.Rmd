@@ -130,11 +130,28 @@ if (n_db == length_all_files) {
   }
 }
 # message("Alle Messwerte eingelesen")
-dbExecute(con, "
-  ALTER TABLE messwerte
-  ADD CONSTRAINT messwerte_pkey
-  PRIMARY KEY (zeit, station);
-")
+```
+
+```{r schaffe_primary_key}
+# Prüfen, ob der Constraint bereits existiert
+constraint_exists <- dbGetQuery(con, "
+  SELECT 1
+  FROM pg_constraint
+  WHERE conname = 'messwerte_pkey'
+    AND conrelid = 'messwerte'::regclass;
+") |> nrow() > 0
+
+# Nur ausführen, wenn der Constraint nicht existiert
+if (!constraint_exists) {
+  dbExecute(con, "
+    ALTER TABLE messwerte
+    ADD CONSTRAINT messwerte_pkey
+    PRIMARY KEY (zeit, station);
+  ")
+  message("Primary Key 'messwerte_pkey' wurde hinzugefügt.")
+} else {
+  message("Primary Key 'messwerte_pkey' existiert bereits.")
+}
 ```
 
 
@@ -164,45 +181,37 @@ Hier wird nun die Tageszeit hinzugefügt, also ob Tag, Abend oder Nacht ist (D,E
 ```{r manipuliere_db}
 messwerte_db <- tbl(con, "messwerte") # wurde oben nur innerhalb einer if-Anweisung definiert
 
-
-ifelse(!("tageszeit" %in% db_query_fields(con, "messwerte")), {
- result <- tbl(con, "messwerte") %>%
-  mutate(
-    tageszeit = case_when(
-      hour(zeit) >= 6  & hour(zeit) < 18 ~ "D",
-      hour(zeit) >= 18 & hour(zeit) < 22 ~ "E",
-      TRUE ~ "N"
-    ),
-    vorbeiflug = if_else(pegelRoh > 127L, 1L, 0L),
-    pegel = pegelRoh - 128L * vorbeiflug,
-    vorhernachher = if_else(
-      datum > !!massnahmendatum,
-      "nachher",
-      "vorher"
+if (!("tageszeit" %in% colnames(messwerte_db))) {
+  result <- tbl(con, "messwerte") %>%
+    mutate(
+      tageszeit = case_when(
+        hour(zeit) >= 6  & hour(zeit) < 18 ~ "D",
+        hour(zeit) >= 18 & hour(zeit) < 22 ~ "E",
+        TRUE ~ "N"
+      ),
+      vorbeiflug = if_else(pegelRoh > 127L, 1L, 0L),
+      pegel = pegelRoh - 128L * vorbeiflug,
+      vorhernachher = if_else(datum > !!massnahmendatum, "nachher", "vorher")
     )
-  )
- 
- dbExecute(con, "DROP TABLE messwerte_weiter;")
- 
-result %>%
-  compute("messwerte_weiter", temporary = FALSE)
-# 2. Alte Tabelle löschen
-dbExecute(con, "DROP TABLE messwerte;")
-
-# 3. Umbenennen
-dbExecute(con, "ALTER TABLE messwerte_weiter RENAME TO messwerte;")
- 
-}, {
+  
+  result %>%
+    compute("messwerte_weiter", temporary = FALSE)
+  # 2. Alte Tabelle löschen
+  dbExecute(con, "DROP TABLE messwerte;")
+  
+  # 3. Umbenennen
+  dbExecute(con, "ALTER TABLE messwerte_weiter RENAME TO messwerte;")
+} else {
   message(
     "Spalte tageszeit existiert bereits in der Tabelle messwerte. Keine Aktion erforderlich."
   )
-})
-
+}
 ```
 
 Jetzt beinhaltet die Tabelle "messwerte" einige zusätzliche Spalten zur Analyse:
 
 ```{r spaltennamen}
+dbListTables(con)
 dbListFields(con, "messwerte")
 ```
 
@@ -213,59 +222,38 @@ dbGetQuery(con, "SELECT * FROM messwerte ORDER BY RANDOM() LIMIT 5;")
 ```
 
 
+## Anzahl der akustischen Ereignisse
 
+Zur ersten überprüfung wird hier der Zeitverlauf der akustischen Ereignisse geplottet:
 
-```{r pegelschriebPhysisch}
+```{r plotte_Anz_akust_ereignisse}
+messwerte_db <- tbl(con, "messwerte") # bislang noch vor der Manipulation
 
-## die Typecasts machen später hoffentlich das weiterarbeiten schneller
-## doch besser physisch
-# dbExecute(con, "
-# CREATE OR REPLACE VIEW pegelschrieb AS
-# SELECT
-#     zeit,
-#     datum,
-#     station,
-#     ts,
-#     tageszeit,
-#     CAST(vorbeiflug AS INTEGER) AS vorbeiflug,
-#     CAST(pegel AS DOUBLE) AS pegel,
-#     vorhernachher
-# FROM 'messwerte'
-# ")
-
-dbExecute(con, "
-CREATE OR REPLACE TABLE pegelschrieb AS
-SELECT
-    zeit,
-    datum,
-    station,
-    ts,
-    tageszeit,
-    CAST(vorbeiflug AS INTEGER) AS vorbeiflug,
-    CAST(pegel AS DOUBLE) AS pegel,
-    vorhernachher
-FROM 'messwerte'
-ORDER BY station, ts
-")
-
-pegelschrieb_tbl <- tbl(con, "pegelschrieb")
-
-colnames(pegelschrieb_tbl)
-pegelschrieb_tbl %>%
-#  filter(station == 117) %>%
-  filter(vorbeiflug==1) %>% 
-  group_by(datum,station) %>%
-  summarise(
-    Anzahl = n()
-  ) %>%
-  ggplot(aes(x=datum, y=Anzahl,color=factor(station)))+
-  geom_line()+
+messwerte_db %>%
+  #filter(station == 117) %>%
+  filter(vorbeiflug == 1) %>%
+  group_by(datum, station, vorhernachher) %>%
+  summarise(Anzahl = n()) %>%
+  ggplot(aes(
+    x = datum,
+    y = Anzahl,
+    color = factor(vorhernachher)
+  )) +
+  geom_line() +
   labs(
     title = "Anzahl der Schallereignisse pro Tag",
     x = "Datum",
     y = "Anzahl der Schallereignisse",
-    color = "Messstation"
-  )
+    color = paste0(
+      "vor oder nach dem\n",
+      massnahmendatum %>%
+        as.character() %>%
+        str_sub(7, 16)
+    )
+  ) +
+  facet_grid(vars(station))
+
+
 ```
 
 ```{r disconnect}
